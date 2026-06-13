@@ -130,7 +130,7 @@
   }
 
   // —— 简易 hash 路由 ——
-  const ROUTES = ['list', 'trend', 'source', 'hr'];
+  const ROUTES = ['list', 'trend', 'source', 'position', 'hr'];
   function useHashRoute() {
     const [route, setRoute] = useState(() => {
       const h = (window.location.hash || '#list').slice(1);
@@ -291,7 +291,7 @@
   const POSITIONS = ['前端工程师','后端工程师','产品经理','UI 设计师','数据分析师','测试工程师','运维工程师','算法工程师','iOS 开发','Android 开发'];
   const COMPANIES = ['阿里巴巴','腾讯','字节跳动','美团','京东','小米','华为','百度','网易','滴滴','快手','B 站','小红书','知乎'];
   const CITIES = ['北京','上海','深圳','广州','杭州','成都','南京','武汉','西安','苏州'];
-  const SOURCES = ['BOSS 直聘','拉勾网','智联招聘','猎聘','LinkedIn','内推'];
+  const SOURCES = ['BOSS 直聘','拉勾网','智联招聘','猎聘','LinkedIn','官网','内推'];
   const HRS = ['王HR','李HR','张HR','陈HR','刘HR'];
 
   // 部门 → HR 映射（登录后按部门过滤）
@@ -471,6 +471,26 @@
     });
     return { days, hrs, series, totals: series.map(s => ({ hr: s.hr, total: s.total })).sort((a,b)=>b.total-a.total) };
   }
+  // 按岗位统计回复情况
+  function buildPositionStats(cands) {
+    const map = {};
+    cands.forEach(c => {
+      const pos = c.position || '未指定';
+      if (!map[pos]) map[pos] = { position: pos, sent: 0, reply: 0, total: 0 };
+      map[pos].total += 1;
+      if (c.sent) {
+        map[pos].sent += 1;
+        if (c.replied) map[pos].reply += 1;
+      }
+    });
+    return Object.values(map)
+      .map(p => ({
+        ...p,
+        rate: p.sent > 0 ? +((p.reply / p.sent) * 100).toFixed(1) : 0,
+        avgDays: p.sent ? +(cands.filter(c => c.position === (p.position || '') && c.sent && c.sendTime).reduce((sum, c) => sum + ((Date.now() - new Date(c.sendTime).getTime()) / 86400000), 0) / p.sent).toFixed(1) : 0,
+      }))
+      .sort((a, b) => b.rate - a.rate);
+  }
   const INVITE_TEMPLATE = {
     wechat: `【XX 公司】{name} 您好，看到您简历非常优秀，我们正在招聘「{position}」岗位，{city}办公，期望薪资可议。方便聊一下吗？`,
     sms:    `【XX公司】{name}您好，我们正在招聘{position}，{city}工作，看到您简历很匹配，欢迎回复"1"获取详细JD。`,
@@ -614,11 +634,11 @@
             <button className="link-btn" onClick={onSelectNone}>清空</button>
           </div>
           <Input value={keyword} onChange={setKeyword} placeholder="搜索姓名 / 公司 / 岗位" prefixIcon="🔍" style={{ width: 220 }} />
-          <Input value={keyword} onChange={setKeyword} placeholder="搜索姓名 / 公司 / 岗位" prefixIcon="🔍" style={{ width: 220 }} />
           <Select value={statusFilter} onChange={setStatusFilter} style={{ width: 130 }} options={[
             { label:'全部状态', value:'all' },
             { label:'已回复',   value:'replied' },
             { label:'已发送',   value:'sent' },
+            { label:'未回复',   value:'noreply' },
             { label:'未发送',   value:'unsent' },
           ]} />
           <Select value={sourceFilter} onChange={setSourceFilter} style={{ width: 140 }} options={[
@@ -1165,6 +1185,29 @@
         }
         const totalHR = hrs.reduce((s,h)=>s+h.total,0);
         if (totalHR > 0) lines.push('今日建议：组织 15 分钟的 HR 复盘会，重点对齐高效邀约话术');
+      }
+    }
+    else if (type === 'position') {
+      const { positionStats = [] } = payload || {};
+      if (positionStats.length === 0) {
+        lines.push('暂未录入岗位数据，建议在导入简历时规范填写"应聘岗位"字段');
+      } else {
+        const sorted = [...positionStats].sort((a,b) => b.rate - a.rate);
+        const top = sorted[0];
+        const bad = sorted.filter(s => s.rate < 20);
+        lines.push(`「${top.position}」回复率最高（${top.rate}%），建议优先安排该岗位候选人面试`);
+        if (bad.length) {
+          const names = bad.map(b => b.position).join('、');
+          lines.push(`「${names}」回复率不足 20%，建议优化岗位描述或调整薪资范围`);
+        }
+        const hot = sorted.sort((a,b) => b.total - a.total)[0];
+        lines.push(`投递量最大的「${hot.position}」（${hot.total} 人），可考虑增加面试官排期`);
+        const totalReply = positionStats.reduce((s,x)=>s+(x.reply||0),0);
+        if (totalReply > 3) {
+          lines.push('今日建议：针对高回复率的 Top 3 岗位，集中安排电话初筛');
+        } else {
+          lines.push('今日建议：先聚焦 1-2 个核心岗位做深度邀约测试，验证后再扩面');
+        }
       }
     }
     // 通用兜底
@@ -1747,6 +1790,124 @@
   // —— 图表子组件：HR 页用（堆叠柱） ——
   // HRChart 已删除（按需求移除 HR 每日上传柱状图）
 
+  // —— 图表子组件：岗位分析用（双 Y 轴） ——
+  function PositionChart({ positionStats }) {
+    const posRef = useRef(null);
+    useEffect(() => {
+      const cleanup = [];
+      if (!posRef.current || !positionStats || !positionStats.length) return;
+      const C = { green1:'#0FA968', red:'#F43F5E', orange:'#F97316', blue1:'#1E6FFF' };
+      const ctx = posRef.current.getContext('2d');
+      const rateColors = positionStats.map(p => p.rate >= 40 ? C.green1 : (p.rate >= 20 ? C.orange : C.red));
+      const c = new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels: positionStats.map(p => p.position),
+          datasets: [
+            { label:'回复率(%)', data: positionStats.map(p => p.rate), backgroundColor: rateColors, borderRadius: 6, yAxisID: 'y' },
+            { label:'回复人数',  data: positionStats.map(p => p.reply), backgroundColor: 'rgba(30,111,255,0.25)', borderColor: C.blue1, borderWidth: 1, borderRadius: 6, yAxisID: 'y1', type: 'bar' },
+          ],
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { position: 'bottom' } },
+          scales: {
+            y:  { beginAtZero: true, max: 100, position: 'left',  title: { display: true, text: '回复率 %' }, ticks: { callback: v => v + '%' } },
+            y1: { beginAtZero: true, position: 'right', title: { display: true, text: '回复人数' }, grid: { drawOnChartArea: false } },
+          },
+        },
+      });
+      cleanup.push(() => c.destroy());
+      return () => cleanup.forEach(fn => fn());
+    }, [positionStats]);
+    return (
+      <div className="chart-grid">
+        <div className="chart-card" style={{ gridColumn:'1 / -1' }}>
+          <div className="chart-title">
+            <span className="bar" />各岗位回复率对比
+            <span style={{ fontSize:12, color:'#6B7A99', fontWeight:400, marginLeft:8 }}>
+              绿色 ≥ 40% 良好，橙色 20~40% 一般，红色 &lt; 20% 需优化
+            </span>
+          </div>
+          <div className="chart-canvas" style={{ height: 380 }}><canvas ref={posRef}></canvas></div>
+        </div>
+      </div>
+    );
+  }
+
+  // —— 岗位分析页 ——
+  function PagePosition({ positionStats, candidates }) {
+    return (
+      <div className="page-wrap">
+        <div className="page-header">
+          <div>
+            <div className="page-title">💼 岗位回复分析</div>
+            <div className="page-sub">对比不同岗位的招聘效果与转化率</div>
+          </div>
+          <span className="page-tag warn">岗位质量</span>
+        </div>
+        <PositionChart positionStats={positionStats} />
+        <div className="table-card" style={{ marginTop: 16 }}>
+          <div className="table-header">
+            <div className="table-title"><span className="bar" />各岗位回复情况统计</div>
+            <div style={{ fontSize:12, color:'#6B7A99' }}>
+              合计 <b style={{ color:'#0FA968' }}>{positionStats.length}</b> 个岗位
+            </div>
+          </div>
+          <div className="table-wrap">
+          <table className="td-table" style={{ marginTop: 8 }}>
+            <thead>
+              <tr>
+                <th style={{ width: 60 }}>排名</th>
+                <th>岗位名称</th>
+                <th>候选人数</th>
+                <th>已发送</th>
+                <th>已回复</th>
+                <th style={{ width: 220 }}>回复率</th>
+                <th>状态评价</th>
+              </tr>
+            </thead>
+            <tbody>
+              {positionStats.length === 0 && (
+                <tr><td colSpan={7}><div className="empty-tip">暂无岗位数据</div></td></tr>
+              )}
+              {positionStats.map((p, i) => {
+                const level = p.rate >= 40 ? 'good' : (p.rate >= 20 ? 'mid' : 'bad');
+                return (
+                  <tr key={p.position}>
+                    <td><span className="rank-num" data-level={i<3?'top':''}>{i+1}</span></td>
+                    <td><span className="td-tag td-tag--primary">{p.position}</span></td>
+                    <td>{p.total}</td>
+                    <td>{p.sent}</td>
+                    <td style={{ color:'#0FA968', fontWeight:600 }}>{p.reply}</td>
+                    <td>
+                      <div className="rate-bar">
+                        <div className="rate-bar-bg">
+                          <div className={`rate-bar-fill rate-${level}`} style={{ width: Math.min(100, p.rate) + '%' }} />
+                        </div>
+                        <span className="rate-bar-text">{p.rate}%</span>
+                      </div>
+                    </td>
+                    <td>
+                      <span className="td-tag" style={{
+                        background: level==='good' ? '#E8F5EE' : (level==='mid' ? '#FEF3E2' : '#FEE2E2'),
+                        color:      level==='good' ? '#0FA968' : (level==='mid' ? '#F59E0B' : '#EF4444'),
+                      }}>
+                        {level==='good' ? '★ 热门' : (level==='mid' ? '一般' : '需优化')}
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          </div>
+        </div>
+        <SmartAdvice type="position" payload={{ positionStats, candidates }} />
+      </div>
+    );
+  }
+
   // ——————— 登录页 ———————
   function LoginPage({ onLogin }) {
     const [user, setUser] = useState('tech');
@@ -1978,6 +2139,7 @@
       if (hrFilter!=='all' && c.uploadedBy!==hrFilter) return false;
       if (statusFilter==='replied' && !c.replied) return false;
       if (statusFilter==='sent' && (!c.sent || c.replied)) return false;
+      if (statusFilter==='noreply' && (!c.sent || c.replied)) return false;
       if (statusFilter==='unsent' && c.sent) return false;
       if (keyword) {
         const k = keyword.toLowerCase();
@@ -2006,6 +2168,7 @@
     const daily = useMemo(() => buildDaily(7), []);
     const channelData = useMemo(() => buildChannelPie(candidates), [candidates]);
     const sourceStats = useMemo(() => buildSourceStats(candidates), [candidates]);
+    const positionStats = useMemo(() => buildPositionStats(candidates), [candidates]);
     const hrStats = useMemo(() => buildHRStats(candidates), [candidates]);
 
     const handleImport = useCallback(list => setAllCandidates(p => [...list, ...p]), []);
@@ -2123,6 +2286,11 @@
               <span style={{ flex: 1 }}>HR 表现</span>
               <span className="rail-sub">HRP</span>
             </a>
+            <a href="#position" className={`rail-link ${route==='position'?'on':''}`} data-tip="岗位分析">
+              <span className="rail-ico rail-ico-text">PS</span>
+              <span style={{ flex: 1 }}>岗位分析</span>
+              <span className="rail-sub">POS</span>
+            </a>
           </nav>
           <div className="rail-bottom">
             <button className="rail-link" data-tip="智能助手 / 帮助中心" onClick={() => setHelpOpen(true)} style={{ cursor:'pointer' }}>
@@ -2158,6 +2326,7 @@
                 {route==='list' && '候选人列表'}
                 {route==='trend' && '趋势分析'}
                 {route==='source' && '招聘来源分析'}
+                {route==='position' && '岗位回复分析'}
                 {route==='hr' && 'HR 表现分析'}
               </div>
               <div className="topbar-sub">
@@ -2261,6 +2430,7 @@
 
             {route === 'trend' && <PageTrend daily={daily} candidates={candidates} />}
             {route === 'source' && <PageSource sourceStats={sourceStats} />}
+            {route === 'position' && <PagePosition positionStats={positionStats} candidates={candidates} />}
             {route === 'hr' && <PageHR hrStats={hrStats} totalCount={candidates.length} candidates={candidates} />}
           </main>
         </div>
