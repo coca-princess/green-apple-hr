@@ -1,0 +1,15 @@
+node_modules
+dist
+.DS_Store
+.vite
+*.log
+
+# 本地临时文件
+_verify.txt
+_*.ps1
+_*.txt
+_*.js
+_*.html
+
+# Vercel
+.vercel

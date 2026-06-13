@@ -1,0 +1,13 @@
+{
+  "name": "greenapple-hr",
+  "private": true,
+  "version": "1.0.0",
+  "description": "青苹果 HR 招聘候选人回复监控平台（单文件 React + 浏览器端 Babel，零构建）",
+  "scripts": {
+    "start": "start.bat",
+    "dev": "start.bat",
+    "serve": "start.bat",
+    "build": "echo No build step - this is a static site with all assets inlined into index.html",
+    "vercel-build": "echo No build step - this is a static site with all assets inlined into index.html"
+  }
+}

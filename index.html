@@ -1,0 +1,2318 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=10.0, user-scalable=yes, viewport-fit=cover" />
+  <meta name="theme-color" content="#0FA968" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="青苹果 HR" />
+  <meta name="format-detection" content="telephone=no, email=no, address=no" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="HandheldFriendly" content="true" />
+  <meta name="MobileOptimized" content="width" />
+  <title>青苹果 · 招聘候选人回复监控平台</title>
+
+  <!-- React 18 + Babel（浏览器内编译 JSX，零依赖、零安装） -->
+  <script crossorigin src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- 图表（Chart.js） -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+  <!-- Excel 解析 -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel" data-presets="env,react" data-type="module">
+  /* =====================================================
+     招聘候选人回复监控平台
+     单文件 React 应用，蓝白主题，无任何构建步骤
+     ===================================================== */
+  const { useState, useEffect, useMemo, useCallback, useRef, Fragment } = React;
+
+  /* ================== 工具函数 ================== */
+  const pad = n => (n < 10 ? `0${n}` : `${n}`);
+  const formatTime = iso => {
+    if (!iso) return '-';
+    const d = new Date(iso);
+    return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
+  const isValidPhone = p => /^1[3-9]\d{9}$/.test(String(p||'').trim());
+  const isValidWechat = w => /^[a-zA-Z][a-zA-Z0-9_-]{5,19}$/.test(String(w||'').trim());
+
+  // 一键跳转外部沟通工具
+  // 注意：浏览器不允许直接拉起任意 exe/已安装客户端，
+  // 通用做法是用「对应的 web 协议」或「分享 scheme」拼接链接，再用 window.open / a 标签打开
+  function buildContactLinks(c, opts = {}) {
+    const replyQuote = opts.quote || '';          // 引用的候选人回复内容
+    const myMessage  = opts.message || '';        // 我要发送的下一句
+    const phone = (c.phone || '').trim();
+    const wechat = (c.wechat || '').trim();
+    const name = c.name || '';
+    const links = [];
+
+    // —— 短信（sms:） ——
+    if (phone) {
+      const body = myMessage || `【青苹果HR】${name}您好，`;
+      const smsBody = replyQuote ? `${body}\n\n您之前回复：${replyQuote}` : body;
+      links.push({
+        key: 'sms',
+        label: '短信',
+        icon: '📱',
+        sub: phone,
+        url: `sms:${phone}?body=${encodeURIComponent(smsBody)}`,
+        available: true,
+        tip: '打开系统短信应用',
+      });
+    }
+
+    // —— 拨打电话（tel:） ——
+    if (phone) {
+      links.push({
+        key: 'tel',
+        label: '电话',
+        icon: '📞',
+        sub: phone,
+        url: `tel:${phone}`,
+        available: true,
+        tip: '直接拨打',
+      });
+    }
+
+    // —— 微信 ——
+    if (wechat) {
+      // 移动端：weixin://
+      // 桌面端：尝试用微信网页版（二维码登录）或引导用户搜索
+      const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+      if (isMobile) {
+        links.push({
+          key: 'wechat-mobile',
+          label: '微信（移动）',
+          icon: '💬',
+          sub: wechat,
+          url: `weixin://`,
+          available: true,
+          tip: '打开微信后搜索 ' + wechat,
+          copy: wechat,
+        });
+      } else {
+        // 桌面端：尝试调用微信 PC 客户端（若已登录），未安装则提示复制微信号手动搜索
+        const wechatText = myMessage
+          ? `候选人：${name}\n微信号：${wechat}\n\n${myMessage}`
+          : `候选人：${name}\n微信号：${wechat}`;
+        links.push({
+          key: 'wechat-pc',
+          label: '微信（桌面）',
+          icon: '💬',
+          sub: wechat,
+          url: `weixin://`,
+          available: true,
+          tip: '唤起微信 PC 客户端（若已登录）',
+          copy: wechatText,
+        });
+        links.push({
+          key: 'wechat-web',
+          label: '微信网页版',
+          icon: '🌐',
+          sub: '扫码登录',
+          url: 'https://wx.qq.com/',
+          available: true,
+          tip: '在网页版微信里搜索联系人',
+          external: true,
+        });
+      }
+    }
+
+    // —— 复制内容到剪贴板 ——
+    if (replyQuote) {
+      const full = `【青苹果HR】回复给 ${name}：\n\n${myMessage || '您好，'}\n\n—— 候选人上一条回复 ——\n${replyQuote}`;
+      links.push({
+        key: 'copy',
+        label: '复制沟通话术',
+        icon: '📋',
+        sub: '一键粘贴',
+        url: '#copy',
+        available: true,
+        tip: '把话术复制到剪贴板',
+        copy: full,
+      });
+    }
+
+    return links;
+  }
+  // 用 a 标签触发跳转（兼容更好）
+  function openUrl(url) {
+    const a = document.createElement('a');
+    a.href = url;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => a.remove(), 100);
+  }
+
+  // —— 简易 hash 路由 ——
+  const ROUTES = ['list', 'trend', 'source', 'hr'];
+  function useHashRoute() {
+    const [route, setRoute] = useState(() => {
+      const h = (window.location.hash || '#list').slice(1);
+      return ROUTES.includes(h) ? h : 'list';
+    });
+    useEffect(() => {
+      const onHash = () => {
+        const h = (window.location.hash || '#list').slice(1);
+        setRoute(ROUTES.includes(h) ? h : 'list');
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      };
+      window.addEventListener('hashchange', onHash);
+      return () => window.removeEventListener('hashchange', onHash);
+    }, []);
+    return [route, (r) => { window.location.hash = r; }];
+  }
+
+  // —— 缩放 hook：CSS scale 整页缩放，localStorage 持久化，Ctrl/Cmd +/-/0 快捷键 ——
+  const ZOOM_KEY = 'ga_zoom_v1';
+  const ZOOM_STEPS = [0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0];
+  function useZoom() {
+    const [zoom, setZoom] = useState(() => {
+      try {
+        const v = parseFloat(localStorage.getItem(ZOOM_KEY) || '1');
+        return ZOOM_STEPS.includes(v) ? v : 1;
+      } catch { return 1; }
+    });
+    useEffect(() => {
+      try { localStorage.setItem(ZOOM_KEY, String(zoom)); } catch {}
+    }, [zoom]);
+    // 快捷键：Ctrl/Cmd + '+' 放大，'-' 缩小，'0' 重置
+    useEffect(() => {
+      const onKey = (e) => {
+        if (!(e.ctrlKey || e.metaKey)) return;
+        if (e.key === '=' || e.key === '+') {
+          e.preventDefault();
+          setZoom(z => {
+            const next = ZOOM_STEPS.find(s => s > z + 0.001);
+            return next != null ? next : ZOOM_STEPS[ZOOM_STEPS.length - 1];
+          });
+        } else if (e.key === '-' || e.key === '_') {
+          e.preventDefault();
+          setZoom(z => {
+            const next = [...ZOOM_STEPS].reverse().find(s => s < z - 0.001);
+            return next != null ? next : ZOOM_STEPS[0];
+          });
+        } else if (e.key === '0') {
+          e.preventDefault();
+          setZoom(1);
+        }
+      };
+      window.addEventListener('keydown', onKey);
+      return () => window.removeEventListener('keydown', onKey);
+    }, []);
+    return {
+      zoom,
+      zoomIn:   () => setZoom(z => { const n = ZOOM_STEPS.find(s => s > z + 0.001); return n != null ? n : z; }),
+      zoomOut:  () => setZoom(z => { const n = [...ZOOM_STEPS].reverse().find(s => s < z - 0.001); return n != null ? n : z; }),
+      zoomReset: () => setZoom(1),
+    };
+  }
+
+  // —— 分页组件 ——
+  function Pagination({ page, total, pageSize, onChange }) {
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    const pages = useMemo(() => {
+      const arr = [];
+      const max = 7;
+      if (totalPages <= max) {
+        for (let i = 1; i <= totalPages; i++) arr.push(i);
+      } else {
+        const left = Math.max(1, page - 2);
+        const right = Math.min(totalPages, page + 2);
+        if (left > 1) arr.push(1);
+        if (left > 2) arr.push('…');
+        for (let i = left; i <= right; i++) arr.push(i);
+        if (right < totalPages - 1) arr.push('…');
+        if (right < totalPages) arr.push(totalPages);
+      }
+      return arr;
+    }, [page, totalPages]);
+    if (totalPages <= 1) {
+      return <div className="pagination-bar"><span className="pg-info">共 {total} 条</span></div>;
+    }
+    return (
+      <div className="pagination-bar">
+        <span className="pg-info">
+          共 <b>{total}</b> 条 · 每页 <b>{pageSize}</b> 条 · 第 <b>{page}</b> / {totalPages} 页
+        </span>
+        <div className="pg-buttons">
+          <button className="pg-btn" disabled={page===1} onClick={()=>onChange(1)} title="首页">«</button>
+          <button className="pg-btn" disabled={page===1} onClick={()=>onChange(page-1)} title="上一页">‹</button>
+          {pages.map((p, i) => p === '…' ? (
+            <span key={`d${i}`} className="pg-ellipsis">…</span>
+          ) : (
+            <button
+              key={p}
+              className={`pg-btn ${p === page ? 'on' : ''}`}
+              onClick={() => onChange(p)}
+            >{p}</button>
+          ))}
+          <button className="pg-btn" disabled={page===totalPages} onClick={()=>onChange(page+1)} title="下一页">›</button>
+          <button className="pg-btn" disabled={page===totalPages} onClick={()=>onChange(totalPages)} title="末页">»</button>
+        </div>
+      </div>
+    );
+  }
+
+  function parseResumeFile(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = e => {
+        try {
+          const wb = XLSX.read(new Uint8Array(e.target.result), { type: 'array' });
+          const sheet = wb.Sheets[wb.SheetNames[0]];
+          const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+          resolve(rows.map((r, idx) => ({
+            id: `C${Date.now()}_${idx}`,
+            name: r['姓名'] || r['name'] || '未知',
+            avatar: ((r['姓名'] || r['name'] || '?') + '').charAt(0),
+            position: r['岗位'] || r['position'] || '未指定',
+            currentCompany: r['公司'] || r['company'] || '-',
+            city: r['城市'] || r['city'] || '-',
+            source: r['来源'] || r['source'] || '导入',
+            yearsOfExp: Number(r['年限'] || r['experience'] || 0),
+            phone: String(r['手机'] || r['phone'] || '').trim(),
+            wechat: String(r['微信'] || r['wechat'] || '').trim(),
+            uploadedBy: String(r['上传人'] || r['HR'] || r['hr'] || r['uploadedBy'] || '未指定').trim(),
+            uploadedAt: r['上传时间'] || r['uploadedAt']
+              ? new Date(r['上传时间'] || r['uploadedAt']).toISOString()
+              : new Date().toISOString(),
+            phoneValid: isValidPhone(r['手机'] || r['phone']),
+            wechatValid: isValidWechat(r['微信'] || r['wechat']),
+            sent: false, replied: false,
+            sendChannel: null, sendTime: null, replyTime: null, replyContent: null,
+            timeline: [{ time: new Date().toISOString(), type: 'import', desc: '简历入库' }],
+          })));
+        } catch (err) { reject(err); }
+      };
+      reader.onerror = reject;
+      reader.readAsArrayBuffer(file);
+    });
+  }
+
+  function downloadTemplate() {
+    const headers = ['姓名','岗位','公司','城市','来源','年限','手机','微信','上传人','上传时间'];
+    const example = ['张三','前端工程师','某某科技','北京','BOSS直聘','3','13800000000','wx_zhangsan','王HR', new Date().toISOString()];
+    const csv = [headers.join(','), example.join(',')].join('\n');
+    const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = '简历导入模板.csv'; a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  /* ================== 模拟数据 ================== */
+  const NAMES = ['张伟','李娜','王强','刘洋','陈静','杨帆','黄磊','赵敏','周杰','吴琳','徐磊','孙婷','马超','朱晓','胡军','郭丽','林峰','何婷婷','高翔','罗倩','郑伟','梁红','谢东','韩雪','唐艺','冯磊','邓超','曹敏','彭浩','曾子墨'];
+  const POSITIONS = ['前端工程师','后端工程师','产品经理','UI 设计师','数据分析师','测试工程师','运维工程师','算法工程师','iOS 开发','Android 开发'];
+  const COMPANIES = ['阿里巴巴','腾讯','字节跳动','美团','京东','小米','华为','百度','网易','滴滴','快手','B 站','小红书','知乎'];
+  const CITIES = ['北京','上海','深圳','广州','杭州','成都','南京','武汉','西安','苏州'];
+  const SOURCES = ['BOSS 直聘','拉勾网','智联招聘','猎聘','LinkedIn','内推'];
+  const HRS = ['王HR','李HR','张HR','陈HR','刘HR'];
+
+  // 部门 → HR 映射（登录后按部门过滤）
+  const DEPARTMENTS = [
+    { id: 'tech',    name: '技术部',   icon: '💻', color: '#0FA968', hrs: ['王HR','李HR'] },
+    { id: 'sales',   name: '销售部',   icon: '🤝', color: '#0FA968', hrs: ['张HR','陈HR'] },
+    { id: 'market',  name: '市场部',   icon: '📣', color: '#0FA968', hrs: ['刘HR'] },
+  ];
+  // 演示账号（密码统一 123456）
+  const ACCOUNTS = [
+    { user:'admin',  pwd:'123456', name:'系统管理员', dept:null,           role:'admin' },
+    { user:'tech',   pwd:'123456', name:'技术部经理', dept:'tech',         role:'manager' },
+    { user:'sales',  pwd:'123456', name:'销售部经理', dept:'sales',        role:'manager' },
+    { user:'market', pwd:'123456', name:'市场部经理', dept:'market',       role:'manager' },
+    { user:'wang',   pwd:'123456', name:'王HR',       dept:'tech',         role:'hr' },
+    { user:'li',     pwd:'123456', name:'李HR',       dept:'tech',         role:'hr' },
+    { user:'zhang',  pwd:'123456', name:'张HR',       dept:'sales',        role:'hr' },
+    { user:'chen',   pwd:'123456', name:'陈HR',       dept:'sales',        role:'hr' },
+    { user:'liu',    pwd:'123456', name:'刘HR',       dept:'market',       role:'hr' },
+  ];
+
+  // 知识库问答（智能问答助手用）
+  const KB = [
+    { keys:['登录','登入','忘记密码','密码'], ans:'登录账号在登录页输入，默认密码 123456。忘记密码请联系系统管理员（admin）重置。' },
+    { keys:['部门','小组','数据权限','看不到'], ans:'登录后只能看到所属部门 HR 上传的候选人。如需跨部门数据，请联系系统管理员。' },
+    { keys:['导入','上传','简历','excel','xlsx','csv'], ans:'点击候选人列表页的「导入简历」按钮，支持 .xlsx / .xls / .csv 单次最多 5 个文件，每个 ≤ 5MB。表头需要包含「姓名、岗位、公司、城市、来源、限、手机、微信、上传人」。' },
+    { keys:['发送','邀请','短信','微信','批量','一键'], ans:'支持 4 种发送策略：① 一键联系全部（智能分配） ② 按当前筛选发送 ③ 勾选行后批量发送 ④ 单条发送。弹窗可选择「智能分配 / 系统统一账号 / 按 HR 各自账号」三种账号模式。' },
+    { keys:['回复率','趋势','来源','分析','图表'], ans:'左侧导航「趋势分析 / 来源分析 / HR 表现」3 个页面提供深度数据视图。回复率 = 已回复人数 / 已发送人数。' },
+    { keys:['bug','报错','错误','打不开','崩溃','白屏'], ans:'① 强制刷新（Ctrl + F5） ② 清除浏览器缓存 ③ 换 Chrome / Edge 浏览器 ④ 若仍有问题，请联系系统管理员并提供复现步骤。' },
+    { keys:['请假','年假','病假','事假','加班','调休'], ans:'请在 HR 系统提交申请，年假按司龄计算：满 1 年 5 天，满 3 年 8 天，满 5 年 10 天。病假需附医院证明。' },
+    { keys:['报销','发票','差旅','出差'], ans:'登录财务系统提交报销单，需附正规发票 / 行程单。每月 25 日前提交当月报销，月底统一打款。' },
+    { keys:['薪资','工资','发薪','几号','发工资'], ans:'每月 10 号发放上个月工资，节假日提前。薪资条可在 HR 系统查询。' },
+    { keys:['招聘','候选人','面试','offer'], ans:'候选人需先在「候选人列表」导入或接收，自动同步至 HR 系统。面试安排请在 HR 系统创建面试日程。' },
+    { keys:['it','电脑','工位','网络','wifi','密码','VPN'], ans:'办公网络 Wi-Fi：OA-System，密码 Oa@2026。VPN 用于远程办公，账号为工号，初始密码 123456@Ab。' },
+    { keys:['青苹果','logo','品牌','颜色','主题'], ans:'主色 #0FA968（高级深绿），底色以白色为主，简洁高级。' },
+  ];
+  function kbAnswer(q) {
+    const text = (q || '').trim().toLowerCase();
+    if (!text) return '请告诉我您的问题～ 例如：怎么导入简历？/ 回复率怎么算？/ 如何批量发送？';
+    for (const item of KB) {
+      if (item.keys.some(k => text.includes(k.toLowerCase()))) return item.ans;
+    }
+    // 默认兜底
+    return '抱歉，我暂未收录这个问题的答案。\n\n您可以：\n· 在「候选人列表」页查看实时数据\n· 联系系统管理员（admin / 123456）\n· 或在管理群反馈该问题，我会持续学习 📚';
+  }
+
+  // HR 账号池：每个 HR 拥有若干手机号/微信号供发送使用
+  const SENDER_ACCOUNTS = {
+    '王HR': { phones: ['13800000001','13800000002'], wechats: ['wx_wang_work','wx_wang_hr'] },
+    '李HR': { phones: ['13900000003','13900000004'], wechats: ['wx_li_hr'] },
+    '张HR': { phones: ['15000000005'],             wechats: ['wx_zhang_hr','wx_zhang_bp'] },
+    '陈HR': { phones: ['15100000006','15100000007'], wechats: ['wx_chen_hr'] },
+    '刘HR': { phones: ['15200000008'],             wechats: ['wx_liu_hr'] },
+  };
+  // 全局默认发送账号（发送对话框的"系统默认"选项）
+  const GLOBAL_ACCOUNTS = {
+    phones:  ['13811110000','13822220000','13933330000'],
+    wechats: ['wx_official_main','wx_official_bp'],
+  };
+  const rPhone = () => {
+    const p = ['138','139','150','151','152','158','186','187','188','199'][Math.floor(Math.random()*10)];
+    let r=''; for(let i=0;i<8;i++) r+=Math.floor(Math.random()*10);
+    return p + r;
+  };
+  const rWechat = () => {
+    const L='abcdefghijklmnopqrstuvwxyz'; let s='wx_';
+    for(let i=0;i<7;i++) s += L[Math.floor(Math.random()*L.length)];
+    return s + Math.floor(Math.random()*99);
+  };
+
+  function generateMock(count=28) {
+    const arr = [];
+    for (let i=0;i<count;i++) {
+      const name = NAMES[i % NAMES.length];
+      const phone = rPhone();
+      const wechat = rWechat();
+      const sent = Math.random() > 0.15;
+      const replied = sent && Math.random() > 0.4;
+      const sendTime = sent ? new Date(Date.now() - Math.floor(Math.random()*6*3600*1000)).toISOString() : null;
+      const replyTime = replied ? new Date(new Date(sendTime).getTime() + Math.floor(Math.random()*4*3600*1000)).toISOString() : null;
+      // 上传时间：分散在近 7 天
+      const uploadedAt = new Date(Date.now() - Math.floor(Math.random()*7*24*3600*1000)).toISOString();
+      arr.push({
+        id: `C${1000+i}`, name, avatar: name.charAt(0),
+        position: POSITIONS[i % POSITIONS.length],
+        currentCompany: COMPANIES[Math.floor(Math.random()*COMPANIES.length)],
+        city: CITIES[Math.floor(Math.random()*CITIES.length)],
+        source: SOURCES[Math.floor(Math.random()*SOURCES.length)],
+        yearsOfExp: 1 + Math.floor(Math.random()*9),
+        phone, wechat,
+        uploadedBy: HRS[Math.floor(Math.random()*HRS.length)],
+        // 部门归属：根据 HR 名字反查部门（演示数据）
+        dept: (() => {
+          const hr = HRS[Math.floor(Math.random()*HRS.length)];
+          for (const d of DEPARTMENTS) if (d.hrs.includes(hr)) return d.id;
+          return null;
+        })(),
+        uploadedAt,
+        phoneValid: isValidPhone(phone),
+        wechatValid: isValidWechat(wechat),
+        sent, replied,
+        sendChannel: sent ? (Math.random()>0.5 ? 'wechat' : 'sms') : null,
+        senderAccount: null,  // 实际发送使用的手机号/微信号（发送时由用户在弹窗指定）
+        sendTime, replyTime,
+        replyContent: replied ? ['您好，我对贵公司职位很感兴趣，方便约个时间聊聊吗？','收到，请问薪资范围是多少？','请发一下职位 JD，谢谢。','我目前还在职，但可以先了解一下。','没问题，可以面试，下周可以安排。'][Math.floor(Math.random()*5)] : null,
+        timeline: [
+          { time: uploadedAt, type: 'import', desc: `简历入库（${HRS[i % HRS.length]} 上传）` },
+          ...(sent ? [{ time: sendTime, type: 'send', desc: '发送邀请（' + (Math.random()>0.5?'微信':'短信') + '）' }] : []),
+          ...(replied ? [{ time: replyTime, type: 'replied', desc: '候选人已回复' }] : []),
+        ],
+      });
+    }
+    return arr;
+  }
+  function buildDaily(days=7) {
+    const arr = [];
+    const d = new Date();
+    for (let i=days-1; i>=0; i--) {
+      const dd = new Date(d); dd.setDate(d.getDate()-i);
+      const date = `${dd.getFullYear()}-${pad(dd.getMonth()+1)}-${pad(dd.getDate())}`;
+      const sent = 80 + Math.floor(Math.random()*60);
+      const reply = Math.floor(sent * (0.25 + Math.random()*0.35));
+      arr.push({
+        date: date.slice(5), fullDate: date, sent, reply,
+        rate: +((reply/sent)*100).toFixed(1),
+      });
+    }
+    return arr;
+  }
+  function buildChannelPie(cands) {
+    const s = { wechat: 0, sms: 0, pending: 0 };
+    cands.forEach(c => {
+      if (c.replied) (c.sendChannel==='wechat' ? s.wechat++ : s.sms++);
+      else s.pending++;
+    });
+    return [
+      { type: '微信已读', value: s.wechat },
+      { type: '短信已读', value: s.sms },
+      { type: '未回复',   value: s.pending },
+    ];
+  }
+  // 按招聘来源统计回复率
+  function buildSourceStats(cands) {
+    const map = {};
+    cands.forEach(c => {
+      const src = c.source || '未知来源';
+      if (!map[src]) map[src] = { source: src, sent: 0, reply: 0, total: 0 };
+      map[src].total += 1;
+      if (c.sent) {
+        map[src].sent += 1;
+        if (c.replied) map[src].reply += 1;
+      }
+    });
+    return Object.values(map)
+      .map(s => ({
+        ...s,
+        rate: s.sent > 0 ? +((s.reply / s.sent) * 100).toFixed(1) : 0,
+      }))
+      .sort((a, b) => b.rate - a.rate);
+  }
+  // 按 HR 统计上传量
+  function buildHRStats(cands) {
+    const map = {};
+    cands.forEach(c => {
+      const hr = c.uploadedBy || '未指定';
+      if (!map[hr]) map[hr] = { hr, total: 0, byDay: {} };
+      map[hr].total += 1;
+      const day = (c.uploadedAt || '').slice(0, 10);
+      if (day) map[hr].byDay[day] = (map[hr].byDay[day] || 0) + 1;
+    });
+    // 转成按日期 × HR 的二维数据
+    const days = Array.from(new Set(cands.map(c => (c.uploadedAt || '').slice(0, 10)).filter(Boolean))).sort();
+    const hrs = Object.keys(map);
+    const series = hrs.map(hr => {
+      const daily = days.map(d => ({ date: d.slice(5), value: map[hr].byDay[d] || 0 }));
+      return { hr, total: map[hr].total, daily };
+    });
+    return { days, hrs, series, totals: series.map(s => ({ hr: s.hr, total: s.total })).sort((a,b)=>b.total-a.total) };
+  }
+  // ——————— 每日智能建议（按分析页维度生成） ———————
+  // type: 'trend' / 'source' / 'hr'
+  // candidates 可选：用于补充真实"回复/已读"维度，让建议更精准
+  function buildAdvice(type, payload) {
+    const today = new Date();
+    const dateStr = `${today.getMonth()+1}月${today.getDate()}日`;
+    const lines = [];
+    const cands = (payload && payload.candidates) || [];
+    if (type === 'trend') {
+      const { daily = [] } = payload || {};
+      const sortedReply = [...daily].sort((a,b) => b.reply - a.reply);
+      const best = sortedReply[0];
+      const worst = sortedReply[sortedReply.length - 1];
+      const totalSent = daily.reduce((s,d) => s + (d.sent||0), 0);
+      const totalReply = daily.reduce((s,d) => s + (d.reply||0), 0);
+      const avg = totalSent ? Math.round(totalReply / totalSent * 100) : 0;
+      if (totalSent === 0) {
+        lines.push('本周还没有发送记录，建议尽快推进简历投递');
+      } else {
+        if (avg < 25) lines.push(`本周整体回复率 ${avg}%，低于行业基线 30%，建议复盘邀约文案与时机`);
+        else if (avg < 40) lines.push(`本周回复率 ${avg}%，处于中等水位，可加强周末与晚间触达提升空间`);
+        else lines.push(`本周回复率 ${avg}%，表现优秀，建议总结方法论并复制到下个招聘周期`);
+      }
+      if (best && worst && best.fullDate !== worst.fullDate) {
+        lines.push(`${best.fullDate} 为最佳单日（${best.reply} 条回复），${worst.fullDate} 表现最弱（${worst.reply} 条），建议分析当天 HR 工作节奏并固化`);
+      }
+      if (totalReply > 0 && totalSent > 0) {
+        const ratio = Math.round(totalReply / totalSent * 100);
+        if (ratio >= 40) lines.push('今日建议：安排 2-3 位高意向候选人电话沟通，转化黄金窗口在 24 小时内');
+        else lines.push('今日建议：批量触发 30 条消息前先 A/B 测试 2 种开场白，挑出回复率更高的版本');
+      }
+    }
+    else if (type === 'source') {
+      const { sourceStats = [] } = payload || {};
+      if (sourceStats.length === 0) {
+        lines.push('暂未录入来源数据，建议在导入简历时规范填写"招聘来源"字段');
+      } else {
+        const sorted = [...sourceStats].sort((a,b) => b.rate - a.rate);
+        const top = sorted[0];
+        const bad = sorted.filter(s => s.rate < 20);
+        lines.push(`最佳来源是「${top.source}」（回复率 ${top.rate}%），下周建议将该渠道预算提高 20%`);
+        if (bad.length) {
+          const names = bad.map(b => b.source).join('、');
+          lines.push(`「${names}」回复率不足 20%，建议暂停投放或优化职位描述`);
+        }
+        const totalReply = sourceStats.reduce((s,x)=>s+(x.reply||0),0);
+        if (totalReply > 0) {
+          lines.push('今日建议：针对最佳来源的 5 位已回复候选人，优先安排一对一视频面试');
+        }
+      }
+    }
+    else if (type === 'hr') {
+      const { hrStats = {} } = payload || {};
+      const hrs = hrStats.hrs || [];
+      if (hrs.length === 0) {
+        lines.push('本周尚无 HR 投递记录，请提醒团队在导入简历时填写归属 HR');
+      } else {
+        const top = [...hrs].sort((a,b)=>b.total-a.total)[0];
+        const low = [...hrs].sort((a,b)=>a.total-b.total).slice(0, 2);
+        lines.push(`${top.hr} 表现最佳（${top.total} 份简历），建议作为本周 HR 标杆案例分享`);
+        if (low.length && low[0].total < top.total * 0.5) {
+          const names = low.map(h => h.hr).join('、');
+          lines.push(`${names} 投递量偏低，建议排查简历来源或时间分配`);
+        }
+        const repliedMap = {};
+        const sentMap = {};
+        cands.forEach(c => {
+          const hr = c.uploadedBy || '未指定';
+          if (c.sent) sentMap[hr] = (sentMap[hr] || 0) + 1;
+          if (c.replied) repliedMap[hr] = (repliedMap[hr] || 0) + 1;
+        });
+        const efficiency = hrs.map(h => ({
+          hr: h.hr,
+          rate: sentMap[h.hr] ? Math.round((repliedMap[h.hr] || 0) / sentMap[h.hr] * 100) : 0,
+          reply: repliedMap[h.hr] || 0,
+        })).filter(x => x.rate > 0).sort((a,b) => b.rate - a.rate);
+        if (efficiency.length) {
+          const best = efficiency[0];
+          if (best.rate >= 40) {
+            lines.push(`转化率冠军 ${best.hr}（回复率 ${best.rate}%），建议复用其邀约话术并组织经验分享`);
+          } else if (best.rate < 20) {
+            lines.push(`团队整体回复率偏低（最高仅 ${best.rate}%），建议统一话术模板并设置 24h 跟进提醒`);
+          }
+        }
+        const totalHR = hrs.reduce((s,h)=>s+h.total,0);
+        if (totalHR > 0) lines.push('今日建议：组织 15 分钟的 HR 复盘会，重点对齐高效邀约话术');
+      }
+    }
+    if (lines.length === 0) lines.push('继续按当前节奏推进即可');
+    return { date: dateStr, items: lines.slice(0, 4) };
+  }
+
+  function SmartAdvice({ type, payload }) {
+    const advice = useMemo(() => buildAdvice(type, payload), [type, payload]);
+    return (
+      <div className="advice-card">
+        <div className="advice-head">
+          <div className="advice-head-left">
+            <div className="advice-ico">✨</div>
+            <div>
+              <div className="advice-title">每日智能建议</div>
+              <div className="advice-sub">{advice.date} · 由青苹果 AI 生成</div>
+            </div>
+          </div>
+          <span className="advice-pill">AI</span>
+        </div>
+        <ul className="advice-list">
+          {advice.items.map((it, i) => (
+            <li key={i}>
+              <span className="advice-num">{i + 1}</span>
+              <span className="advice-text">{it}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
+    );
+  }
+
+  const INVITE_TEMPLATE = {
+    wechat: `【XX 公司】{name} 您好，看到您简历非常优秀，我们正在招聘「{position}」岗位，{city}办公，期望薪资可议。方便聊一下吗？`,
+    sms:    `【XX公司】{name}您好，我们正在招聘{position}，{city}工作，看到您简历很匹配，欢迎回复"1"获取详细JD。`,
+  };
+  const fillTpl = (tpl, d) => tpl.replace('{name}', d.name).replace('{position}', d.position).replace('{city}', d.city);
+
+  /* ================== UI 原子组件 ================== */
+  const Button = ({ theme='default', variant='solid', size='medium', icon, disabled, onClick, children, style }) => {
+    const cls = ['td-btn', `td-btn--${theme}`, `td-btn--${variant}`, `td-btn--${size}`].join(' ');
+    return (
+      <button className={cls} disabled={disabled} onClick={onClick} style={style}>
+        {icon && <span className="td-btn-icon">{icon}</span>}
+        {children}
+      </button>
+    );
+  };
+  const Input = ({ value, onChange, placeholder, prefixIcon, style }) => (
+    <div className="td-input" style={style}>
+      {prefixIcon && <span className="td-input-prefix">{prefixIcon}</span>}
+      <input value={value||''} onChange={e=>onChange?.(e.target.value)} placeholder={placeholder} />
+    </div>
+  );
+  const Select = ({ value, onChange, options, style }) => (
+    <select className="td-select" value={value} onChange={e=>onChange?.(e.target.value)} style={style}>
+      {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+    </select>
+  );
+  const Modal = ({ visible, title, onClose, children, footer, width=560 }) => {
+    if (!visible) return null;
+    return (
+      <div className="td-modal-mask" onClick={onClose}>
+        <div className="td-modal" style={{ width }} onClick={e=>e.stopPropagation()}>
+          <div className="td-modal-header">{title}<span className="td-modal-close" onClick={onClose}>×</span></div>
+          <div className="td-modal-body">{children}</div>
+          {footer && <div className="td-modal-footer">{footer}</div>}
+        </div>
+      </div>
+    );
+  };
+  const Drawer = ({ visible, title, onClose, children, footer, width=560 }) => {
+    if (!visible) return null;
+    return (
+      <div className="td-drawer-mask" onClick={onClose}>
+        <div className="td-drawer" style={{ width }} onClick={e=>e.stopPropagation()}>
+          <div className="td-drawer-header">{title}<span className="td-drawer-close" onClick={onClose}>×</span></div>
+          <div className="td-drawer-body">{children}</div>
+          {footer && <div className="td-drawer-footer">{footer}</div>}
+        </div>
+      </div>
+    );
+  };
+  const Tag = ({ children, theme='default' }) => <span className={`td-tag td-tag--${theme}`}>{children}</span>;
+
+  /* ================== 业务组件 ================== */
+  function StatCards({ data }) {
+    const items = [
+      { key:'total',  label:'候选人总数',   value: data?.total ?? 0,  trend:'up',   text:'+12.5% 较昨日', icon:'HR', cls:'' },
+      { key:'sent',   label:'今日已发送',   value: data?.sent ?? 0,   trend:'up',   text:'+8.2% 较昨日',  icon:'SND', cls:'' },
+      { key:'reply',  label:'今日已回复',   value: data?.reply ?? 0,  trend:'up',   text: data?.sent ? `回复率 ${((data.reply/data.sent)*100).toFixed(1)}%` : '回复率 —', icon:'RPL', cls:'success' },
+      { key:'noreply',label:'未回复待跟进', value: (data?.sent??0)-(data?.reply??0), trend:'down', text:'需关注', icon:'WAIT', cls:'danger' },
+    ];
+    return (
+      <div className="stat-grid">
+        {items.map(it => (
+          <div className={`stat-card ${it.cls}`} key={it.key}>
+            <div className="stat-icon">{it.icon}</div>
+            <div className="stat-info">
+              <div className="stat-label">{it.label}</div>
+              <div className="stat-value">{Number(it.value).toLocaleString()}</div>
+              <div className="stat-trend">
+                <span className={it.trend==='up'?'up':'down'}>{it.trend==='up'?'▲ ':'▼ '}</span>{it.text}
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  function Toolbar({
+    keyword, setKeyword, statusFilter, setStatusFilter,
+    sourceFilter, setSourceFilter, sourceOptions,
+    hrFilter, setHrFilter, hrOptions,
+    onImport, onBatchSend, onOneClickAll, onOneClickFiltered,
+    filteredCount, selectableCount,
+    selectedCount, onSelectAll, onSelectNone, onSelectInvert,
+  }) {
+    const fileRef = useRef(null);
+    const handleFiles = async (files) => {
+      const all = [];
+      for (const f of files) {
+        if (f.size > 5*1024*1024) { alert(`${f.name} 超过 5MB，已跳过`); continue; }
+        const list = await parseResumeFile(f);
+        all.push(...list);
+      }
+      if (!all.length) { alert('未解析到有效数据'); return; }
+      onImport?.(all);
+      alert(`成功导入 ${all.length} 位候选人`);
+    };
+    return (
+      <div className="toolbar-card">
+        <div className="toolbar-left">
+          <input
+            ref={fileRef} type="file" accept=".xlsx,.xls,.csv" multiple
+            style={{ display: 'none' }}
+            onChange={e => handleFiles(Array.from(e.target.files))}
+          />
+          <Button theme="primary" icon="📥" onClick={()=>fileRef.current?.click()}>导入简历</Button>
+          <Button variant="outline" icon="📄" onClick={()=>{ downloadTemplate(); alert('模板已下载'); }}>下载模板</Button>
+          <span className="toolbar-divider" />
+          <Button
+            theme="primary"
+            icon="⚡"
+            disabled={selectableCount===0}
+            onClick={onOneClickAll}
+            title="直接对所有未回复的候选人发送邀请"
+          >
+            一键联系全部
+          </Button>
+          <Button
+            theme="success"
+            variant="outline"
+            icon="🎯"
+            disabled={!filteredCount || selectableCount===0}
+            onClick={onOneClickFiltered}
+            title="对当前列表筛选后的未回复候选人发送邀请"
+          >
+            按当前筛选发送 ({filteredCount})
+          </Button>
+          <Button theme="success" variant="outline" disabled={selectedCount===0} onClick={onBatchSend}>
+            发送已选 ({selectedCount})
+          </Button>
+        </div>
+        <div className="toolbar-right">
+          <div className="select-actions">
+            <span className="select-actions-label">勾选：</span>
+            <button className="link-btn" onClick={onSelectAll}>全选</button>
+            <span className="dot-sep">·</span>
+            <button className="link-btn" onClick={onSelectInvert}>反选</button>
+            <span className="dot-sep">·</span>
+            <button className="link-btn" onClick={onSelectNone}>清空</button>
+          </div>
+          <Input value={keyword} onChange={setKeyword} placeholder="搜索姓名 / 公司 / 岗位" prefixIcon="🔍" style={{ width: 220 }} />
+          <Input value={keyword} onChange={setKeyword} placeholder="搜索姓名 / 公司 / 岗位" prefixIcon="🔍" style={{ width: 220 }} />
+          <Select value={statusFilter} onChange={setStatusFilter} style={{ width: 130 }} options={[
+            { label:'全部状态', value:'all' },
+            { label:'已回复',   value:'replied' },
+            { label:'已发送',   value:'sent' },
+            { label:'未发送',   value:'unsent' },
+          ]} />
+          <Select value={sourceFilter} onChange={setSourceFilter} style={{ width: 140 }} options={[
+            { label:'全部来源', value:'all' },
+            ...sourceOptions.map(s => ({ label:s, value:s }))
+          ]} />
+          <Select value={hrFilter} onChange={setHrFilter} style={{ width: 130 }} options={[
+            { label:'全部 HR', value:'all' },
+            ...hrOptions.map(h => ({ label:h, value:h }))
+          ]} />
+        </div>
+      </div>
+    );
+  }
+
+  function StatusTag({ row }) {
+    if (row.replied) return <span className="status-tag replied"><span className="dot" />已回复</span>;
+    if (row.sent)    return <span className="status-tag sending"><span className="dot" />已发送</span>;
+    return <span className="status-tag pending"><span className="dot" />未发送</span>;
+  }
+
+  function CandidateTable({ data, onSend, onView, selectedRowKeys, onSelectChange }) {
+    const toggle = id => {
+      const set = new Set(selectedRowKeys);
+      set.has(id) ? set.delete(id) : set.add(id);
+      onSelectChange?.(Array.from(set));
+    };
+    const toggleAll = () => {
+      if (selectedRowKeys.length === data.length) onSelectChange?.([]);
+      else onSelectChange?.(data.map(c => c.id));
+    };
+    return (
+      <div className="table-wrap">
+      <table className="td-table">
+        <thead>
+          <tr>
+            <th style={{ width: 50 }}>
+              <input type="checkbox"
+                checked={data.length>0 && selectedRowKeys.length===data.length}
+                onChange={toggleAll} />
+            </th>
+            <th style={{ width: 180 }}>候选人</th>
+            <th style={{ width: 130 }}>应聘岗位</th>
+            <th style={{ width: 130 }}>当前公司</th>
+            <th style={{ width: 80 }}>城市</th>
+            <th style={{ width: 220 }}>联系方式</th>
+            <th style={{ width: 100 }}>来源</th>
+            <th style={{ width: 110 }}>上传人</th>
+            <th style={{ width: 110 }}>回复状态</th>
+            <th style={{ width: 150 }}>发送时间</th>
+            <th style={{ width: 170 }}>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          {data.map(row => (
+            <tr key={row.id} className={row.replied ? 'row-replied' : (row.sent ? 'row-sent' : 'row-pending')}>
+              <td><input type="checkbox" checked={selectedRowKeys.includes(row.id)} onChange={()=>toggle(row.id)} /></td>
+              <td>
+                <div className="avatar-cell">
+                  <div className="avatar">{row.avatar}</div>
+                  <div>
+                    <div className="name">{row.name}</div>
+                    <div className="meta">ID: {row.id}</div>
+                  </div>
+                </div>
+              </td>
+              <td>{row.position}</td>
+              <td>{row.currentCompany}</td>
+              <td>{row.city}</td>
+              <td>
+                <div className="contact-cell">
+                  <div className="row">📱 <span className="v">{row.phone||'—'}</span>{!row.phoneValid && row.phone && <span className="td-tag td-tag--danger">异常</span>}</div>
+                  <div className="row">💬 <span className="v">{row.wechat||'—'}</span>{!row.wechatValid && row.wechat && <span className="td-tag td-tag--warning">待校验</span>}</div>
+                </div>
+              </td>
+              <td><span className="td-tag td-tag--primary">{row.source}</span></td>
+              <td>
+                <div className="hr-cell">
+                  <div className="hr-avatar">{row.uploadedBy?.charAt(0) || '?'}</div>
+                  <span className="hr-name">{row.uploadedBy || '未指定'}</span>
+                </div>
+              </td>
+              <td><StatusTag row={row} /></td>
+              <td><span style={{ color:'#6B7A99', fontSize:12 }}>{formatTime(row.sendTime)}</span></td>
+              <td>
+                <Button size="small" variant="text" theme="primary" onClick={()=>onView?.(row)}>查看</Button>
+                <Button size="small" theme="primary" variant="outline" disabled={row.replied} onClick={()=>onSend?.(row)}>发送</Button>
+              </td>
+            </tr>
+          ))}
+          {data.length === 0 && (
+            <tr><td colSpan={10}><div className="empty-tip">暂无候选人数据，请先导入简历</div></td></tr>
+          )}
+        </tbody>
+      </table>
+      </div>
+    );
+  }
+
+  function CandidateDetail({ visible, candidate, onClose, onResend }) {
+    const [draft, setDraft] = useState('');
+    const [copyHint, setCopyHint] = useState('');
+
+    useEffect(() => {
+      if (visible) {
+        setDraft('');
+        setCopyHint('');
+      }
+    }, [visible, candidate?.id]);
+
+    if (!candidate) return null;
+    const links = buildContactLinks(candidate, {
+      quote: candidate.replyContent || '',
+      message: draft,
+    });
+
+    const handleLinkClick = (link) => {
+      // 复制粘附文本（如果有）
+      if (link.copy) {
+        try {
+          navigator.clipboard?.writeText(link.copy);
+          setCopyHint(`已复制：${link.label}`);
+          setTimeout(() => setCopyHint(''), 2500);
+        } catch (e) {}
+      }
+      if (link.key === 'copy') {
+        // 仅复制，不打开新窗口
+        return;
+      }
+      if (link.url && link.url !== '#') {
+        openUrl(link.url);
+      }
+    };
+
+    return (
+      <Drawer
+        visible={visible}
+        title={`候选人详情 - ${candidate.name}`}
+        onClose={onClose}
+        width="600px"
+        footer={
+          <Fragment>
+            <Button onClick={onClose}>关闭</Button>
+            <Button theme="primary" disabled={candidate.replied} onClick={()=>onResend?.(candidate)}>
+              {candidate.replied ? '已回复，无需重发' : '再次发送邀请'}
+            </Button>
+          </Fragment>
+        }
+      >
+        <div className="candidate-detail">
+          <div style={{ display:'flex', gap:16, alignItems:'center', marginBottom:16 }}>
+            <div className="big-avatar">{candidate.avatar}</div>
+            <div>
+              <div style={{ fontSize:20, fontWeight:700 }}>{candidate.name}</div>
+              <div style={{ color:'#6B7A99', fontSize:13, marginTop:4 }}>
+                {candidate.position} · {candidate.yearsOfExp} 年经验 · {candidate.city}
+              </div>
+              <div style={{ marginTop:8 }}>
+                {candidate.replied ? <span className="td-tag td-tag--success">✓ 已回复</span>
+                 : candidate.sent ? <span className="td-tag td-tag--primary">已发送 - 等待回复</span>
+                 : <span className="td-tag td-tag--danger">未发送</span>}
+              </div>
+            </div>
+          </div>
+          <div className="detail-divider" />
+          <div className="detail-grid">
+            {[
+              ['当前公司', candidate.currentCompany], ['候选人 ID', candidate.id],
+              ['手机号',    candidate.phone||'-'],    ['微信号',   candidate.wechat||'-'],
+              ['来源渠道',  candidate.source],
+              ['发送渠道',  candidate.sendChannel==='wechat'?'微信':candidate.sendChannel==='sms'?'短信':'-'],
+              ['发送账号',  candidate.senderAccount || (candidate.sent ? '系统账号（智能分配）' : '-')],
+              ['发送时间',  formatTime(candidate.sendTime)],
+              ['回复时间',  formatTime(candidate.replyTime)],
+            ].map(([k,v],i) => (
+              <div className="detail-row" key={i}>
+                <div className="label">{k}</div>
+                <div className="value">{v}</div>
+              </div>
+            ))}
+          </div>
+
+          {candidate.replyContent && (
+            <Fragment>
+              <div className="detail-divider" />
+              <div style={{ fontWeight:600, marginBottom:8, display:'flex', alignItems:'center', gap:8 }}>
+                <span>💬 候选人回复</span>
+                <span className="td-tag td-tag--success" style={{ marginLeft:'auto' }}>等待跟进</span>
+              </div>
+              <div className="reply-bubble">{candidate.replyContent}</div>
+            </Fragment>
+          )}
+
+          {/* 一键继续沟通 */}
+          <div className="detail-divider" />
+          <div style={{ fontWeight:600, marginBottom:10, display:'flex', alignItems:'center', gap:8 }}>
+            <span>🚀 一键继续沟通</span>
+            <span style={{ fontSize:12, color:'#6B7A99', fontWeight:400 }}>
+              点击跳转微信/短信，回复内容会自动带入
+            </span>
+          </div>
+
+          <div className="form-item" style={{ marginBottom:10 }}>
+            <label>我的下一句</label>
+            <textarea
+              value={draft}
+              onChange={e => setDraft(e.target.value)}
+              rows={2}
+              placeholder="例：您好！方便约一个 15 分钟电话聊聊吗？"
+            />
+          </div>
+
+          <div className="contact-quick-grid">
+            {links.map(link => (
+              <button
+                key={link.key}
+                className={`contact-quick-card ${link.key.startsWith('wechat') ? 'wechat' : ''} ${link.key==='sms' ? 'sms' : ''}`}
+                onClick={() => handleLinkClick(link)}
+                title={link.tip}
+              >
+                <div className="cq-icon">{link.icon}</div>
+                <div className="cq-body">
+                  <div className="cq-label">{link.label}</div>
+                  <div className="cq-sub">{link.sub}</div>
+                </div>
+                <div className="cq-arrow">→</div>
+              </button>
+            ))}
+          </div>
+
+          {copyHint && <div className="copy-toast">✓ {copyHint}</div>}
+
+          <div className="detail-divider" />
+          <div style={{ fontWeight:600, marginBottom:12 }}>互动时间线</div>
+          <ul className="timeline">
+            {candidate.timeline.map((t,i) => (
+              <li key={i} className={t.type==='replied'?'replied':t.type==='failed'?'failed':''}>
+                <div className="time">{formatTime(t.time)}</div>
+                <div className="desc">{t.desc}</div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </Drawer>
+    );
+  }
+
+  function SendDialog({ visible, candidates, onClose, onConfirm }) {
+    const [channel, setChannel] = useState('wechat');
+    const [content, setContent] = useState(INVITE_TEMPLATE.wechat);
+    const [skipInvalid, setSkipInvalid] = useState(true);
+    // 发送账号
+    const [accountMode, setAccountMode] = useState('auto');   // auto | global | hr | single
+    const [globalAccount, setGlobalAccount] = useState('');   // 单选
+    const [hrAccountPick, setHrAccountPick] = useState({});   // { hrName: account }
+
+    useEffect(() => {
+      if (candidates && candidates.length) setContent(fillTpl(INVITE_TEMPLATE[channel], candidates[0]));
+    }, [channel, candidates, visible]);
+
+    // 切换渠道时重置默认账号
+    useEffect(() => {
+      if (channel === 'wechat') setGlobalAccount(GLOBAL_ACCOUNTS.wechats[0] || '');
+      else setGlobalAccount(GLOBAL_ACCOUNTS.phones[0] || '');
+      setHrAccountPick({});
+    }, [channel]);
+
+    if (!visible) return null;
+    const valid = (candidates||[]).filter(c => channel==='wechat' ? isValidWechat(c.wechat) : isValidPhone(c.phone)).length;
+    const invalid = (candidates||[]).length - valid;
+
+    // 收集本次涉及到的 HR
+    const involvedHRs = Array.from(new Set((candidates||[]).map(c => c.uploadedBy || '未指定')));
+    const accountList = channel === 'wechat'
+      ? GLOBAL_ACCOUNTS.wechats.map(v => ({ value: v, label: v, tag: '系统' }))
+      : GLOBAL_ACCOUNTS.phones.map(v => ({ value: v, label: v, tag: '系统' }));
+
+    // 统计各 HR 拥有该渠道账号的数量
+    const hrHasAccount = (hr) => {
+      const accs = SENDER_ACCOUNTS[hr];
+      if (!accs) return [];
+      return channel === 'wechat' ? accs.wechats : accs.phones;
+    };
+
+    // 解析最终选中的账号集合（用于校验）
+    const resolveAccounts = () => {
+      if (accountMode === 'global') {
+        return globalAccount ? [globalAccount] : [];
+      }
+      if (accountMode === 'hr') {
+        return involvedHRs.map(hr => hrAccountPick[hr] || hrHasAccount(hr)[0] || null).filter(Boolean);
+      }
+      if (accountMode === 'auto') {
+        // 智能分配：尽量分散到多个账号（轮询所有可用账号）
+        const pool = [];
+        GLOBAL_ACCOUNTS[channel === 'wechat' ? 'wechats' : 'phones'].forEach(a => pool.push({ acc: a, owner: '系统' }));
+        involvedHRs.forEach(hr => hrHasAccount(hr).forEach(a => pool.push({ acc: a, owner: hr })));
+        return pool.length ? [pool[0].acc] : [];  // 至少一个
+      }
+      return [];
+    };
+
+    const finalAccounts = resolveAccounts();
+
+    const handleConfirm = () => {
+      if (!(candidates||[]).length) return alert('请先选择候选人');
+      if (valid===0) return alert(`所选候选人中没有有效的${channel==='wechat'?'微信':'手机号'}`);
+      if (accountMode === 'global' && !globalAccount) {
+        return alert('请选择系统发送账号');
+      }
+      if (accountMode === 'hr') {
+        const missing = involvedHRs.find(hr => !hrHasAccount(hr).length);
+        if (missing) return alert(`HR「${missing}」没有可用的${channel==='wechat'?'微信':'手机号'}，请使用其他模式`);
+      }
+      if (!finalAccounts.length) return alert('请至少选择一个发送账号');
+
+      onConfirm?.({ channel, content, skipInvalid, accountMode, globalAccount, hrAccountPick, candidates });
+      alert(`已通过${channel==='wechat'?'微信':'短信'}发送 ${valid} 条邀请\n使用账号：${finalAccounts.join('、')}`);
+    };
+
+    return (
+      <Modal
+        visible={visible}
+        title="发送招聘邀请"
+        onClose={onClose}
+        width={700}
+        footer={
+          <Fragment>
+            <Button onClick={onClose}>取消</Button>
+            <Button theme="primary" onClick={handleConfirm}>确认发送</Button>
+          </Fragment>
+        }
+      >
+        <div style={{ marginBottom:16, color:'#6B7A99', fontSize:13 }}>
+          已选择 <b style={{ color:'#0FA968' }}>{candidates?.length||0}</b> 位候选人，
+          有效联系方式 <b style={{ color:'#0A7D49' }}>{valid}</b> 条
+          {invalid>0 && <Fragment>，<b style={{ color:'#EF4444' }}>{invalid}</b> 条异常</Fragment>}
+        </div>
+
+        <div className="form-item">
+          <label>发送渠道</label>
+          <div className="radio-group">
+            <label className={channel==='wechat'?'on':''}>
+              <input type="radio" checked={channel==='wechat'} onChange={()=>setChannel('wechat')} /> 💬 微信
+            </label>
+            <label className={channel==='sms'?'on':''}>
+              <input type="radio" checked={channel==='sms'} onChange={()=>setChannel('sms')} /> 📱 短信
+            </label>
+          </div>
+        </div>
+
+        {/* 发送账号选择 */}
+        <div className="form-item sender-account-block">
+          <label>发送账号</label>
+          <div style={{ flex: 1 }}>
+            <div className="account-mode-tabs">
+              <button
+                className={`account-tab ${accountMode==='auto'?'on':''}`}
+                onClick={()=>setAccountMode('auto')}
+                title="自动从所有可用账号中轮询分配"
+              >⚡ 智能分配</button>
+              <button
+                className={`account-tab ${accountMode==='global'?'on':''}`}
+                onClick={()=>setAccountMode('global')}
+              >🌐 系统统一账号</button>
+              <button
+                className={`account-tab ${accountMode==='hr'?'on':''}`}
+                onClick={()=>setAccountMode('hr')}
+              >👤 按 HR 各自账号</button>
+            </div>
+
+            {accountMode === 'auto' && (
+              <div className="account-hint">
+                将自动从 <b>{accountList.length}</b> 个系统账号 + <b>{involvedHRs.length}</b> 位 HR 的账号池中分散发送，降低单一账号封号风险。
+              </div>
+            )}
+
+            {accountMode === 'global' && (
+              <div>
+                <Select
+                  value={globalAccount}
+                  onChange={setGlobalAccount}
+                  options={accountList}
+                  style={{ width: '100%' }}
+                />
+                <div className="account-hint">
+                  所有候选人都通过此 {channel==='wechat'?'微信号':'手机号'} 发送，适合统一品牌出口。
+                </div>
+              </div>
+            )}
+
+            {accountMode === 'hr' && (
+              <div className="hr-account-list">
+                {involvedHRs.length === 0 && <div className="account-hint">无候选人</div>}
+                {involvedHRs.map(hr => {
+                  const accs = hrHasAccount(hr);
+                  if (!accs.length) {
+                    return (
+                      <div key={hr} className="hr-account-row warn">
+                        <div className="hr-account-label">
+                          <div className="hr-avatar small">{hr.charAt(0)}</div>
+                          <span>{hr}</span>
+                        </div>
+                        <div className="hr-account-empty">该 HR 没有可用的{channel==='wechat'?'微信号':'手机号'}</div>
+                      </div>
+                    );
+                  }
+                  return (
+                    <div key={hr} className="hr-account-row">
+                      <div className="hr-account-label">
+                        <div className="hr-avatar small">{hr.charAt(0)}</div>
+                        <span>{hr}</span>
+                      </div>
+                      <div className="hr-account-options">
+                        {accs.map(a => (
+                          <label
+                            key={a}
+                            className={`chip ${(hrAccountPick[hr]||accs[0])===a ? 'on' : ''}`}
+                          >
+                            <input
+                              type="radio"
+                              name={`hr-acc-${hr}`}
+                              checked={(hrAccountPick[hr]||accs[0])===a}
+                              onChange={()=>setHrAccountPick({ ...hrAccountPick, [hr]: a })}
+                            />
+                            {channel==='wechat' ? '💬' : '📱'} {a}
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+                <div className="account-hint">
+                  每位 HR 用自己名下的账号发送，可追溯到具体负责人。
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="form-item">
+          <label>短信/微信内容</label>
+          <textarea value={content} onChange={e=>setContent(e.target.value)} rows={5} />
+          <div className="form-tip">支持变量：{'{name}'} 姓名 · {'{position}'} 岗位 · {'{city}'} 城市</div>
+        </div>
+
+        <div className="form-item">
+          <label></label>
+          <label><input type="checkbox" checked={skipInvalid} onChange={e=>setSkipInvalid(e.target.checked)} /> 自动跳过联系方式无效的候选人</label>
+        </div>
+
+        <div className="preview-box">
+          <div className="form-tip" style={{ marginBottom:6 }}>内容预览（前 1 条）：</div>
+          <div>{candidates?.[0] ? fillTpl(INVITE_TEMPLATE[channel], candidates[0]) : content}</div>
+        </div>
+      </Modal>
+    );
+  }
+
+  // ——————— 分析子页面 ———————
+  // 趋势页（每日回复/发送/汇总）
+  function PageTrend({ daily, candidates }) {
+    const lineRef = useRef(null);
+    const pieRef  = useRef(null);
+    const colRef  = useRef(null);
+    const channelData = useMemo(() => buildChannelPie(candidates || []), [candidates]);
+
+    useEffect(() => {
+      const cleanup = [];
+      // 绿色主调色板
+      const C = {
+        g700: '#0A7D49', g500: '#0FA968', g300: '#D4ECDD', g200: '#D4ECDD',
+        blue1: '#0FA968', blue2: '#4D8EFF', orange: '#F2994A', white: '#FFFFFF',
+      };
+      const channelPalette = channelData.map(d => {
+        if (d.type.includes('微信')) return C.g700;
+        if (d.type.includes('短信')) return C.blue1;
+        return C.orange;
+      });
+
+      // 折线
+      if (lineRef.current) {
+        const ctx = lineRef.current.getContext('2d');
+        const g = ctx.createLinearGradient(0, 0, 0, 280);
+        g.addColorStop(0, 'rgba(30,106,69,0.45)');
+        g.addColorStop(1, 'rgba(124,214,165,0.02)');
+        const c = new Chart(ctx, {
+          type: 'line',
+          data: {
+            labels: daily.map(d => d.date),
+            datasets: [{
+              label: '回复量', data: daily.map(d => d.reply),
+              borderColor: C.g700, backgroundColor: g, fill: true, tension: 0.4,
+              pointBackgroundColor: C.white, pointBorderColor: C.g700, pointBorderWidth: 2,
+              pointRadius: 5, pointHoverRadius: 7, borderWidth: 3,
+            }],
+          },
+          options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } },
+        });
+        cleanup.push(() => c.destroy());
+      }
+      // 环形
+      if (pieRef.current && channelData.length) {
+        const ctx = pieRef.current.getContext('2d');
+        const c = new Chart(ctx, {
+          type: 'doughnut',
+          data: {
+            labels: channelData.map(d => d.type),
+            datasets: [{
+              data: channelData.map(d => d.value),
+              backgroundColor: channelPalette,
+              borderColor: C.white, borderWidth: 3, hoverOffset: 8,
+            }],
+          },
+          options: { responsive: true, maintainAspectRatio: false, cutout: '60%', plugins: { legend: { position: 'bottom' } } },
+        });
+        cleanup.push(() => c.destroy());
+      }
+      // 柱
+      if (colRef.current) {
+        const ctx = colRef.current.getContext('2d');
+        const g = ctx.createLinearGradient(0, 0, 0, 240);
+        g.addColorStop(0, C.g500); g.addColorStop(1, C.g200);
+        const c = new Chart(ctx, {
+          type: 'bar',
+          data: {
+            labels: daily.map(d => d.date),
+            datasets: [{
+              label: '发送量', data: daily.map(d => d.sent),
+              backgroundColor: g, borderRadius: 8, barThickness: 28, maxBarThickness: 36,
+            }],
+          },
+          options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } },
+        });
+        cleanup.push(() => c.destroy());
+      }
+      return () => cleanup.forEach(fn => fn());
+    }, [daily, channelData]);
+
+    return (
+      <div className="page-wrap">
+        <div className="page-header">
+          <div>
+            <div className="page-title">📈 回复量 / 发送量趋势</div>
+            <div className="page-sub">观察每日邀约量与候选人互动热度</div>
+          </div>
+          <span className="page-tag">每日对比</span>
+        </div>
+        <div className="chart-grid">
+          <div className="chart-card">
+            <div className="chart-title"><span className="bar" />近 7 日回复趋势</div>
+            <div className="chart-canvas"><canvas ref={lineRef}></canvas></div>
+          </div>
+          <div className="chart-card">
+            <div className="chart-title"><span className="bar" />渠道回复占比</div>
+            <div className="chart-canvas"><canvas ref={pieRef}></canvas></div>
+          </div>
+          <div className="chart-card" style={{ gridColumn:'1 / -1' }}>
+            <div className="chart-title"><span className="bar" />近 7 日发送量统计</div>
+            <div className="chart-canvas" style={{ height: 240 }}><canvas ref={colRef}></canvas></div>
+          </div>
+        </div>
+        <div className="table-card" style={{ marginTop: 16 }}>
+          <div className="table-header">
+            <div className="table-title"><span className="bar" />每日趋势明细</div>
+          </div>
+          <div className="table-wrap">
+          <table className="td-table" style={{ marginTop: 0 }}>
+            <thead><tr>
+              <th>日期</th><th>发送量</th><th>回复量</th><th style={{ width: 220 }}>回复率</th><th>状态</th>
+            </tr></thead>
+            <tbody>
+              {daily.map(d => {
+                const good = d.rate >= 40, mid = d.rate >= 20 && d.rate < 40;
+                return (
+                  <tr key={d.fullDate}>
+                    <td>{d.fullDate}</td>
+                    <td>{d.sent}</td>
+                    <td style={{ color:'#0FA968', fontWeight:600 }}>{d.reply}</td>
+                    <td>
+                      <div className="rate-bar" style={{ minWidth: 140 }}>
+                        <div className="rate-bar-bg">
+                          <div className={`rate-bar-fill ${good?'rate-good':mid?'rate-mid':'rate-bad'}`}
+                            style={{ width: Math.min(100, d.rate) + '%' }} />
+                        </div>
+                        <span className="rate-bar-text">{d.rate}%</span>
+                      </div>
+                    </td>
+                    <td>
+                      <span className="td-tag" style={{
+                        background: good?'#E8F5EE':mid?'#FEF3E2':'#FEE2E2',
+                        color:      good?'#0FA968':mid?'#F59E0B':'#EF4444',
+                      }}>
+                        {good ? '★ 良好' : (mid ? '一般' : '待提升')}
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          </div>
+        </div>
+        <SmartAdvice type="trend" payload={{ daily, candidates }} />
+      </div>
+    );
+  }
+  // 来源页
+  function PageSource({ sourceStats, candidates }) {
+    return (
+      <div className="page-wrap">
+        <div className="page-header">
+          <div>
+            <div className="page-title">🌐 招聘来源分析</div>
+            <div className="page-sub">对比不同来源的回复效果与转化率</div>
+          </div>
+          <span className="page-tag" style={{ background:'#E8F5EE', color:'#0A7D49' }}>渠道质量</span>
+        </div>
+        <SourceChart sourceStats={sourceStats} />
+        <div className="table-card" style={{ marginTop: 16 }}>
+          <div className="table-header">
+            <div className="table-title"><span className="bar" />各招聘来源回复率统计</div>
+            <div style={{ fontSize:12, color:'#6B7A99' }}>
+              合计 <b style={{ color:'#0FA968' }}>{sourceStats.length}</b> 个来源
+            </div>
+          </div>
+          <div className="table-wrap">
+          <table className="td-table" style={{ marginTop: 8 }}>
+            <thead>
+              <tr>
+                <th style={{ width: 60 }}>排名</th>
+                <th>招聘来源</th>
+                <th>候选人数</th>
+                <th>已发送</th>
+                <th>已回复</th>
+                <th style={{ width: 220 }}>回复率</th>
+                <th>状态评价</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sourceStats.length === 0 && (
+                <tr><td colSpan={7}><div className="empty-tip">暂无来源数据</div></td></tr>
+              )}
+              {sourceStats.map((s, i) => {
+                const level = s.rate >= 40 ? 'good' : (s.rate >= 20 ? 'mid' : 'bad');
+                return (
+                  <tr key={s.source}>
+                    <td><span className="rank-num" data-level={i<3?'top':''}>{i+1}</span></td>
+                    <td><span className="td-tag td-tag--primary">{s.source}</span></td>
+                    <td>{s.total}</td>
+                    <td>{s.sent}</td>
+                    <td style={{ color:'#0FA968', fontWeight:600 }}>{s.reply}</td>
+                    <td>
+                      <div className="rate-bar">
+                        <div className="rate-bar-bg">
+                          <div className={`rate-bar-fill rate-${level}`} style={{ width: Math.min(100, s.rate) + '%' }} />
+                        </div>
+                        <span className="rate-bar-text">{s.rate}%</span>
+                      </div>
+                    </td>
+                    <td>
+                      <span className="td-tag" style={{
+                        background: level==='good' ? '#E8F5EE' : (level==='mid' ? '#FEF3E2' : '#FEE2E2'),
+                        color:      level==='good' ? '#0FA968' : (level==='mid' ? '#F59E0B' : '#EF4444'),
+                      }}>
+                        {level==='good' ? '★ 优秀' : (level==='mid' ? '一般' : '需优化')}
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          </div>
+        </div>
+        <SmartAdvice type="source" payload={{ sourceStats, candidates }} />
+      </div>
+    );
+  }
+  // HR 页
+  function PageHR({ hrStats, totalCount, candidates }) {
+    return (
+      <div className="page-wrap">
+        <div className="page-header">
+          <div>
+            <div className="page-title">👥 HR 表现分析</div>
+            <div className="page-sub">每位 HR 上传总数、占比与每日明细</div>
+          </div>
+          <span className="page-tag" style={{ background:'#E8F5EE', color:'#0A7D49' }}>HR 排行</span>
+        </div>
+        <div className="table-card" style={{ marginTop: 16 }}>
+          <div className="table-header">
+            <div className="table-title"><span className="bar" />HR 简历上传排行</div>
+            <div style={{ fontSize:12, color:'#6B7A99' }}>
+              共 <b style={{ color:'#0FA968' }}>{hrStats.hrs.length}</b> 位 HR，
+              合计 <b style={{ color:'#0FA968' }}>{totalCount}</b> 份简历
+            </div>
+          </div>
+          <div className="table-wrap">
+          <table className="td-table" style={{ marginTop: 8 }}>
+            <thead>
+              <tr>
+                <th style={{ width: 60 }}>排名</th>
+                <th>HR</th>
+                <th>上传总数</th>
+                <th>占比</th>
+                {hrStats.days.map(d => (
+                  <th key={d} style={{ minWidth: 70 }}>{d.slice(5)}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {hrStats.totals.length === 0 && (
+                <tr><td colSpan={3 + hrStats.days.length}><div className="empty-tip">暂无 HR 上传数据</div></td></tr>
+              )}
+              {hrStats.totals.map((row, i) => {
+                const series = hrStats.series.find(s => s.hr === row.hr);
+                const percent = totalCount ? +((row.total / totalCount) * 100).toFixed(1) : 0;
+                return (
+                  <tr key={row.hr}>
+                    <td><span className="rank-num" data-level={i<3?'top':''}>{i+1}</span></td>
+                    <td>
+                      <div className="hr-cell">
+                        <div className="hr-avatar big">{row.hr.charAt(0)}</div>
+                        <span className="hr-name">{row.hr}</span>
+                      </div>
+                    </td>
+                    <td><b>{row.total}</b> 份</td>
+                    <td style={{ width: 200 }}>
+                      <div className="rate-bar">
+                        <div className="rate-bar-bg">
+                          <div className="rate-bar-fill rate-good" style={{ width: percent + '%' }} />
+                        </div>
+                        <span className="rate-bar-text">{percent}%</span>
+                      </div>
+                    </td>
+                    {hrStats.days.map(d => {
+                      const v = (series && series.byDay && series.byDay[d]) || 0;
+                      return (
+                        <td key={d} style={{ textAlign:'center', fontVariantNumeric:'tabular-nums' }}>
+                          {v > 0
+                            ? <span className="hr-day-cell" data-level={v>=3?'high':v>=1?'mid':''}>{v}</span>
+                            : <span style={{ color:'#C2D2EA' }}>-</span>
+                          }
+                        </td>
+                      );
+                    })}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          </div>
+        </div>
+        <SmartAdvice type="hr" payload={{ hrStats, candidates }} />
+      </div>
+    );
+  }
+
+  // —— 图表子组件：趋势页用（折线 + 环形 + 柱） ——
+  function TrendCharts({ daily, candidates }) {
+    const lineRef = useRef(null);
+    const pieRef = useRef(null);
+    const colRef = useRef(null);
+    // 内部计算渠道占比，避免外部数据不同步
+    const channelData = useMemo(() => buildChannelPie(candidates || []), [candidates]);
+    useEffect(() => {
+      const cleanup = [];
+      // === 统一调色板：绿色为主，蓝白为辅 ===
+      const C = {
+        green1: '#0FA968',  // 主绿 - 高级深绿
+        green2: '#0A7D49',  // 深绿
+        green3: '#D4ECDD',  // 浅薄荷
+        green4: '#E8F5EE',  // 极浅薄荷
+        green5: '#D4ECDD',  // 薄荷
+        green6: '#E8F5EE',  // 极淡薄荷
+        blue1:  '#0FA968',  // 品牌绿
+        blue2:  '#4D8EFF',
+        blue3:  '#A6C8FF',  // 浅蓝
+        white:  '#FFFFFF',
+        red:    '#EF4444',
+        orange: '#E37318',
+      };
+      // 通用 5 色分类色板（绿系为主，蓝色点睛）
+      const CAT5 = [C.green1, C.green3, C.blue1, C.green4, C.blue3];
+      // 通用 7 色分类色板（HR 堆叠柱用，足够 5~7 位 HR）
+      const CAT7 = [C.green1, C.green3, C.blue1, C.green2, C.blue2, C.green4, C.green5];
+
+      // —— 折线：近 7 日回复趋势 ——
+      if (lineRef.current) {
+        const ctx = lineRef.current.getContext('2d');
+        const c = new Chart(ctx, {
+          type: 'line',
+          data: {
+            labels: daily.map(d => d.date),
+            datasets: [{
+              label: '回复量',
+              data: daily.map(d => d.reply),
+              borderColor: C.green1,
+              backgroundColor: (ctx) => {
+                const g = ctx.chart.ctx.createLinearGradient(0, 0, 0, 280);
+                g.addColorStop(0, 'rgba(30,106,69,0.30)');
+                g.addColorStop(1, 'rgba(124,214,165,0.05)');
+                return g;
+              },
+              fill: true, tension: 0.4,
+              pointBackgroundColor: C.white,
+              pointBorderColor: C.green1, pointBorderWidth: 2,
+              pointRadius: 5, pointHoverRadius: 7,
+            }],
+          },
+          options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } },
+        });
+        cleanup.push(() => c.destroy());
+      }
+
+      // —— 环形图：渠道回复占比 ——
+      if (pieRef.current) {
+        const ctx = pieRef.current.getContext('2d');
+        // 渠道对应配色
+        const palette = channelData.map(d => {
+          if (d.type.includes('微信')) return C.green1;
+          if (d.type.includes('短信')) return C.blue1;
+          return C.orange; // 未回复
+        });
+        const c = new Chart(ctx, {
+          type: 'doughnut',
+          data: {
+            labels: channelData.map(d => d.type),
+            datasets: [{
+              data: channelData.map(d => d.value),
+              backgroundColor: palette,
+              borderColor: C.white, borderWidth: 2,
+              hoverOffset: 6,
+            }],
+          },
+          options: {
+            responsive: true, maintainAspectRatio: false, cutout: '62%',
+            plugins: { legend: { position: 'bottom' } },
+          },
+        });
+        cleanup.push(() => c.destroy());
+      }
+
+      // —— 柱状：近 7 日发送量 ——
+      if (colRef.current) {
+        const ctx = colRef.current.getContext('2d');
+        const c = new Chart(ctx, {
+          type: 'bar',
+          data: {
+            labels: daily.map(d => d.date),
+            datasets: [{
+              label: '发送量',
+              data: daily.map(d => d.sent),
+              backgroundColor: (ctx) => {
+                const g = ctx.chart.ctx.createLinearGradient(0, 0, 0, 240);
+                g.addColorStop(0, C.green2);
+                g.addColorStop(1, C.green4);
+                return g;
+              },
+              borderRadius: { topLeft: 8, topRight: 8, bottomLeft: 0, bottomRight: 0 },
+              barThickness: 28,
+              maxBarThickness: 36,
+            }],
+          },
+          options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } },
+        });
+        cleanup.push(() => c.destroy());
+      }
+
+      // —— 双 Y 轴：按来源回复率（绿/橙/红分档） + 蓝白辅助柱 ——
+      if (srcRef.current && sourceStats && sourceStats.length) {
+        const ctx = srcRef.current.getContext('2d');
+        const rateColors = sourceStats.map(s => s.rate >= 40 ? C.green1 : (s.rate >= 20 ? C.orange : C.red));
+        const c = new Chart(ctx, {
+          type: 'bar',
+          data: {
+            labels: sourceStats.map(s => s.source),
+            datasets: [
+              {
+                label: '回复率(%)',
+                data: sourceStats.map(s => s.rate),
+                backgroundColor: rateColors,
+                borderRadius: 6,
+                yAxisID: 'y',
+              },
+              {
+                label: '回复人数',
+                data: sourceStats.map(s => s.reply),
+                backgroundColor: 'rgba(30,111,255,0.25)',
+                borderColor: C.blue1,
+                borderWidth: 1,
+                borderRadius: 6,
+                yAxisID: 'y1',
+                type: 'bar',
+              },
+            ],
+          },
+          options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { position: 'bottom' } },
+            scales: {
+              y:  { beginAtZero: true, max: 100, position: 'left',  title: { display: true, text: '回复率 %' }, ticks: { callback: v => v + '%' } },
+              y1: { beginAtZero: true, position: 'right', title: { display: true, text: '回复人数' }, grid: { drawOnChartArea: false } },
+            },
+          },
+        });
+        cleanup.push(() => c.destroy());
+      }
+
+      // —— 堆叠柱：HR 每日上传量 ——
+      if (hrRef.current && hrStats && hrStats.days.length) {
+        const ctx = hrRef.current.getContext('2d');
+        const datasets = hrStats.series.map((s, i) => {
+          const color = CAT7[i % CAT7.length];
+          return {
+            label: s.hr,
+            data: s.daily.map(d => d.value),
+            backgroundColor: color,
+            borderColor: C.white, borderWidth: 1,
+            borderRadius: 4,
+            stack: 'hr',
+          };
+        });
+        const c = new Chart(ctx, {
+          type: 'bar',
+          data: { labels: hrStats.days.map(d => d.slice(5)), datasets },
+          options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { position: 'bottom' } },
+            scales: {
+              x: { stacked: true, grid: { display: false } },
+              y: { stacked: true, beginAtZero: true, title: { display: true, text: '上传数量' }, ticks: { precision: 0 } },
+            },
+          },
+        });
+        cleanup.push(() => c.destroy());
+      }
+      return () => cleanup.forEach(fn => fn());
+    }, [daily, channelData]);
+    return (
+      <div className="chart-grid">
+        <div className="chart-card">
+          <div className="chart-title"><span className="bar" />近 7 日回复趋势</div>
+          <div className="chart-canvas"><canvas ref={lineRef}></canvas></div>
+        </div>
+        <div className="chart-card">
+          <div className="chart-title"><span className="bar" />渠道回复占比</div>
+          <div className="chart-canvas"><canvas ref={pieRef}></canvas></div>
+        </div>
+        <div className="chart-card" style={{ gridColumn:'1 / -1' }}>
+          <div className="chart-title"><span className="bar" />近 7 日发送量统计</div>
+          <div className="chart-canvas" style={{ height: 240 }}><canvas ref={colRef}></canvas></div>
+        </div>
+      </div>
+    );
+  }
+
+  // —— 图表子组件：来源页用（双 Y 轴） ——
+  function SourceChart({ sourceStats }) {
+    const srcRef = useRef(null);
+    useEffect(() => {
+      const cleanup = [];
+      if (!srcRef.current || !sourceStats || !sourceStats.length) return;
+      const C = { green1:'#0FA968', red:'#EF4444', orange:'#F59E0B', blue1:'#0FA968' };
+      const ctx = srcRef.current.getContext('2d');
+      const rateColors = sourceStats.map(s => s.rate >= 40 ? C.green1 : (s.rate >= 20 ? C.orange : C.red));
+      const c = new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels: sourceStats.map(s => s.source),
+          datasets: [
+            { label:'回复率(%)', data: sourceStats.map(s => s.rate), backgroundColor: rateColors, borderRadius: 6, yAxisID: 'y' },
+            { label:'回复人数',  data: sourceStats.map(s => s.reply), backgroundColor: 'rgba(30,111,255,0.25)', borderColor: C.blue1, borderWidth: 1, borderRadius: 6, yAxisID: 'y1', type: 'bar' },
+          ],
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { position: 'bottom' } },
+          scales: {
+            y:  { beginAtZero: true, max: 100, position: 'left',  title: { display: true, text: '回复率 %' }, ticks: { callback: v => v + '%' } },
+            y1: { beginAtZero: true, position: 'right', title: { display: true, text: '回复人数' }, grid: { drawOnChartArea: false } },
+          },
+        },
+      });
+      cleanup.push(() => c.destroy());
+      return () => cleanup.forEach(fn => fn());
+    }, [sourceStats]);
+    return (
+      <div className="chart-grid">
+        <div className="chart-card" style={{ gridColumn:'1 / -1' }}>
+          <div className="chart-title">
+            <span className="bar" />各招聘来源回复率对比
+            <span style={{ fontSize:12, color:'#6B7A99', fontWeight:400, marginLeft:8 }}>
+              绿色 ≥ 40% 良好，橙色 20~40% 一般，红色 &lt; 20% 需优化
+            </span>
+          </div>
+          <div className="chart-canvas" style={{ height: 380 }}><canvas ref={srcRef}></canvas></div>
+        </div>
+      </div>
+    );
+  }
+
+  // —— 图表子组件：HR 页用（堆叠柱） ——
+  // HRChart 已删除（按需求移除 HR 每日上传柱状图）
+
+  // ——————— 登录页 ———————
+  function LoginPage({ onLogin }) {
+    const [user, setUser] = useState('tech');
+    const [pwd, setPwd]   = useState('123456');
+    const [err, setErr]   = useState('');
+    const [loading, setLoading] = useState(false);
+
+    const handleSubmit = (e) => {
+      e?.preventDefault();
+      setErr('');
+      setLoading(true);
+      setTimeout(() => {
+        const acc = ACCOUNTS.find(a => a.user === user.trim() && a.pwd === pwd);
+        if (!acc) { setErr('账号或密码错误（演示密码统一为 123456）'); setLoading(false); return; }
+        onLogin?.(acc);
+      }, 350);
+    };
+
+    return (
+      <div className="login-page">
+        <div className="login-bg" />
+        <div className="login-card">
+          <div className="login-brand">
+            <img src="./assets/logo.svg" alt="青苹果" />
+            <div>
+              <div className="login-title">青苹果 · GreenApple HR</div>
+              <div className="login-sub">招聘候选人回复监控平台</div>
+            </div>
+          </div>
+          <form className="login-form" onSubmit={handleSubmit}>
+            <div className="login-tip">👋 欢迎回来，请登录您的账号</div>
+            <label className="login-field">
+              <span>账号</span>
+              <input value={user} onChange={e=>setUser(e.target.value)} placeholder="请输入账号" autoFocus />
+            </label>
+            <label className="login-field">
+              <span>密码</span>
+              <input type="password" value={pwd} onChange={e=>setPwd(e.target.value)} placeholder="请输入密码" />
+            </label>
+            {err && <div className="login-err">⚠ {err}</div>}
+            <button className="login-btn" disabled={loading}>
+              {loading ? '登录中…' : '登 录'}
+            </button>
+            <div className="login-quick">
+              <div className="login-quick-title">演示账号（密码统一 123456）</div>
+              <div className="login-quick-list">
+                {ACCOUNTS.slice(1, 5).map(a => (
+                  <button type="button" key={a.user} className="login-chip"
+                    onClick={() => { setUser(a.user); setPwd('123456'); }}>
+                    {a.name}（{a.user}）
+                  </button>
+                ))}
+                <button type="button" className="login-chip admin"
+                  onClick={() => { setUser('admin'); setPwd('123456'); }}>
+                  管理员（admin）
+                </button>
+              </div>
+            </div>
+          </form>
+        </div>
+        <div className="login-foot">© 2026 青苹果 HR · 仅供演示</div>
+      </div>
+    );
+  }
+
+  // ——————— 智能助手（AI 问答 + 帮助中心，二合一抽屉） ———————
+  function HelpBot({ open, onClose }) {
+    const [tab, setTab] = useState('ai');
+    const [messages, setMessages] = useState([
+      { who: 'bot', text: '您好，我是青苹果小助手 🍏\n可以问我：怎么导入简历？/ 怎么批量发送？/ 怎么查看回复率？/ 怎么跨部门协作？等。' },
+    ]);
+    const [input, setInput] = useState('');
+    const listRef = useRef(null);
+
+    useEffect(() => {
+      if (open && tab==='ai' && listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
+    }, [messages, open, tab]);
+
+    if (!open) return null;
+    const send = () => {
+      const q = input.trim();
+      if (!q) return;
+      setMessages(m => [...m, { who: 'me', text: q }]);
+      setInput('');
+      setTimeout(() => {
+        setMessages(m => [...m, { who: 'bot', text: kbAnswer(q) }]);
+      }, 350);
+    };
+    const aiQuick = ['怎么导入简历？','怎么批量发送？','如何看回复率？','怎么跨部门协作？'];
+    const helpFaq = [
+      { q: '忘记密码', a: '请联系系统管理员(admin)或 HRBP 重置密码,普通账号暂不支持自助找回。' },
+      { q: '公司年假政策', a: '司龄满 1 年享 5 天年假,满 5 年享 10 天,满 10 年享 15 天。' },
+      { q: 'Bug 反馈 / 建议', a: '请发邮件至 it@greenapple.cn,标题注明"青苹果 HR 平台"并附截图。' },
+    ];
+    return (
+      <div className="bot-mask" onClick={onClose}>
+        <div className="bot-panel" onClick={e=>e.stopPropagation()}>
+          <div className="bot-header">
+            <div className="bot-header-left">
+              <div className="bot-avatar">🍏</div>
+              <div>
+                <div className="bot-title">青苹果智能助手</div>
+                <div className="bot-sub">AI 问答 · 帮助中心</div>
+              </div>
+            </div>
+            <button className="bot-close" onClick={onClose}>×</button>
+          </div>
+          <div className="bot-tabs">
+            <button className={`bot-tab ${tab==='ai'?'on':''}`} onClick={()=>setTab('ai')}>AI 智能问答</button>
+            <button className={`bot-tab ${tab==='help'?'on':''}`} onClick={()=>setTab('help')}>帮助中心</button>
+          </div>
+          {tab==='ai' ? (
+            <>
+              <div className="bot-list" ref={listRef}>
+                {messages.map((m, i) => (
+                  <div key={i} className={`bot-msg ${m.who}`}>
+                    <div className="bot-bubble">{m.text}</div>
+              </div>
+            ))}
+          </div>
+          <div className="bot-quick">
+            {aiQuick.map(q => (
+              <button key={q} className="bot-chip" onClick={() => { setInput(q); }}>{q}</button>
+            ))}
+          </div>
+          <div className="bot-input">
+            <input
+              value={input}
+              onChange={e=>setInput(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') send(); }}
+              placeholder="输入您的问题，回车发送…"
+            />
+            <button className="bot-send" onClick={send}>发送</button>
+          </div>
+            </>
+          ) : (
+            <div className="bot-list" ref={listRef}>
+              {helpFaq.map((f, i) => (
+                <div key={i} className="help-faq">
+                  <div className="help-faq-q">Q. {f.q}</div>
+                  <div className="help-faq-a">{f.a}</div>
+                </div>
+              ))}
+              <div className="help-faq">
+                <div className="help-faq-q">Q. 还有其他问题？</div>
+                <div className="help-faq-a">可在"AI 智能问答"中直接提问,或联系 HRBP / 系统管理员。</div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+
+  /* ================== 主应用 ================== */
+  function App() {
+    // —— 登录态 ——
+    const [user, setUser] = useState(() => {
+      try { return JSON.parse(sessionStorage.getItem('ga_user') || 'null'); } catch { return null; }
+    });
+    const [route, navigate] = useHashRoute();
+    const [helpOpen, setHelpOpen] = useState(false);
+    // —— 整页缩放 —— 让用户在手机上也能看到完整功能
+    const { zoom, zoomIn, zoomOut, zoomReset } = useZoom();
+
+    // —— 移动端抽屉式侧栏状态 ——
+    const [navOpen, setNavOpen] = useState(false);
+    // 路由切换时自动关闭抽屉
+    useEffect(() => { setNavOpen(false); }, [route]);
+
+    // —— 全部候选人（演示数据） ——
+    const [allCandidates, setAllCandidates] = useState(() => generateMock(68));
+    // 当前用户可见候选人（管理员看全部，其他看本部门）
+    const candidates = useMemo(() => {
+      if (!user || user.dept == null) return allCandidates;
+      return allCandidates.filter(c => c.dept === user.dept);
+    }, [allCandidates, user]);
+
+    const [selected, setSelected] = useState([]);
+    const [detail, setDetail] = useState({ visible:false, candidate:null });
+    const [sendOpen, setSendOpen] = useState(false);
+    const [sendTarget, setSendTarget] = useState([]);
+    const [keyword, setKeyword] = useState('');
+    const [statusFilter, setStatusFilter] = useState('all');
+    const [sourceFilter, setSourceFilter] = useState('all');
+    const [hrFilter, setHrFilter] = useState('all');
+    const [page, setPage] = useState(1);
+    const PAGE_SIZE = 30;
+
+    // 部门调色板
+    const deptObj = DEPARTMENTS.find(d => d.id === user?.dept) || null;
+    const railGrad = deptObj
+      ? `linear-gradient(180deg, ${deptObj.color} 0%, ${deptObj.color}dd 100%)`
+      : 'linear-gradient(180deg, #3B82F6 0%, #1D4ED8 100%)';
+
+    // 模拟实时接收回复
+    useEffect(() => {
+      const t = setInterval(() => {
+        setAllCandidates(prev => {
+          const targets = prev.filter(c => c.sent && !c.replied);
+          if (!targets.length) return prev;
+          const n = Math.max(1, Math.floor(Math.random()*2));
+          const ids = new Set([...targets].sort(()=>Math.random()-0.5).slice(0,n).map(c=>c.id));
+          return prev.map(c => {
+            if (!ids.has(c.id)) return c;
+            const t = new Date().toISOString();
+            return {
+              ...c, replied:true, replyTime:t,
+              replyContent:'您好，我对这个岗位比较感兴趣，方便了解一下详情吗？',
+              timeline:[...c.timeline, { time:t, type:'replied', desc:'候选人已回复（自动接收）' }],
+            };
+          });
+        });
+      }, 8000);
+      return () => clearInterval(t);
+    }, []);
+
+    const sourceOptions = useMemo(
+      () => Array.from(new Set(candidates.map(c => c.source))), [candidates]
+    );
+    const hrOptions = useMemo(
+      () => Array.from(new Set(candidates.map(c => c.uploadedBy).filter(Boolean))), [candidates]
+    );
+
+    // 筛选条件变化时回到第 1 页
+    useEffect(() => { setPage(1); }, [keyword, statusFilter, sourceFilter, hrFilter, candidates.length]);
+
+    const filtered = useMemo(() => candidates.filter(c => {
+      if (sourceFilter!=='all' && c.source!==sourceFilter) return false;
+      if (hrFilter!=='all' && c.uploadedBy!==hrFilter) return false;
+      if (statusFilter==='replied' && !c.replied) return false;
+      if (statusFilter==='sent' && (!c.sent || c.replied)) return false;
+      if (statusFilter==='unsent' && c.sent) return false;
+      if (keyword) {
+        const k = keyword.toLowerCase();
+        return c.name.toLowerCase().includes(k)
+            || c.position.toLowerCase().includes(k)
+            || c.currentCompany.toLowerCase().includes(k)
+            || (c.uploadedBy||'').toLowerCase().includes(k);
+      }
+      return true;
+    }), [candidates, keyword, statusFilter, sourceFilter, hrFilter]);
+
+    const summary = useMemo(() => {
+      const total = candidates.length;
+      const sent  = candidates.filter(c => c.sent).length;
+      const reply = candidates.filter(c => c.replied).length;
+      return { total, sent, reply };
+    }, [candidates]);
+
+    // 可一键发送的候选人（未回复）：用于"一键联系全部"和"按当前筛选发送"
+    const sendableAll = useMemo(() => candidates.filter(c => !c.replied), [candidates]);
+    const sendableFiltered = useMemo(
+      () => filtered.filter(c => !c.replied),
+      [filtered]
+    );
+
+    const daily = useMemo(() => buildDaily(7), []);
+    const channelData = useMemo(() => buildChannelPie(candidates), [candidates]);
+    const sourceStats = useMemo(() => buildSourceStats(candidates), [candidates]);
+    const hrStats = useMemo(() => buildHRStats(candidates), [candidates]);
+
+    const handleImport = useCallback(list => setAllCandidates(p => [...list, ...p]), []);
+    const handleSend = useCallback(row => { setSendTarget([row]); setSendOpen(true); }, []);
+    const handleBatchSend = useCallback(() => {
+      if (!selected.length) return alert('请先在表格中勾选候选人');
+      setSendTarget(selected); setSendOpen(true);
+    }, [selected]);
+
+    // 一键联系全部未回复的候选人
+    const handleOneClickAll = useCallback(() => {
+      const list = sendableAll;
+      if (!list.length) return alert('当前没有可发送的候选人（已全部回复）');
+      if (!confirm(`将向全部 ${list.length} 位未回复候选人发送邀请，确定吗？`)) return;
+      setSendTarget(list);
+      setSendOpen(true);
+    }, [sendableAll]);
+
+    // 对当前筛选后未回复的候选人发送邀请
+    const handleOneClickFiltered = useCallback(() => {
+      const list = sendableFiltered;
+      if (!list.length) return alert('当前筛选结果中没有可发送的候选人');
+      if (!confirm(`将向当前筛选出的 ${list.length} 位未回复候选人发送邀请，确定吗？`)) return;
+      setSendTarget(list);
+      setSendOpen(true);
+    }, [sendableFiltered]);
+
+    // 候选人当前页切片
+    const pagedData = useMemo(() => {
+      const start = (page - 1) * PAGE_SIZE;
+      return filtered.slice(start, start + PAGE_SIZE);
+    }, [filtered, page]);
+
+    // 勾选快捷操作
+    const handleSelectAll = useCallback(() => setSelected(filtered.map(c => c.id)), [filtered]);
+    const handleSelectNone = useCallback(() => setSelected([]), []);
+    const handleSelectInvert = useCallback(() => {
+      const cur = new Set(selected);
+      setSelected(filtered.filter(c => !cur.has(c.id)).map(c => c.id));
+    }, [filtered, selected]);
+    // 全选当前页（避免一次性选几千条）
+    const handleSelectAllOnPage = useCallback(() => {
+      setSelected(pagedData.map(c => c.id));
+    }, [pagedData]);
+    const handleConfirmSend = useCallback(({ channel, skipInvalid, accountMode, globalAccount, hrAccountPick, candidates: list }) => {
+      // 给每位候选人分配一个 senderAccount
+      const pickAccountFor = (c) => {
+        if (accountMode === 'global') return globalAccount;
+        if (accountMode === 'hr') {
+          const hr = c.uploadedBy || '未指定';
+          return hrAccountPick[hr] || (SENDER_ACCOUNTS[hr] && (channel==='wechat' ? SENDER_ACCOUNTS[hr].wechats[0] : SENDER_ACCOUNTS[hr].phones[0])) || null;
+        }
+        // auto: 轮询（这里只取第一个作为代表）
+        return null;
+      };
+      setAllCandidates(prev => {
+        const now = new Date().toISOString();
+        return prev.map(c => {
+          if (!list.find(x => x.id === c.id)) return c;
+          if (skipInvalid) {
+            if (channel==='wechat' && !isValidWechat(c.wechat)) return c;
+            if (channel==='sms' && !isValidPhone(c.phone)) return c;
+          }
+          const acc = pickAccountFor(c);
+          return {
+            ...c, sent:true, sendChannel:channel, sendTime:now, senderAccount:acc,
+            timeline: [...c.timeline, { time:now, type:'send', desc:`已通过${channel==='wechat'?'微信':'短信'}发送邀请（${acc || '系统账号'}）` }],
+          };
+        });
+      });
+      setSendOpen(false); setSelected([]);
+    }, []);
+
+    // 未登录：渲染登录页
+    if (!user) {
+      return <LoginPage onLogin={(u) => { setUser(u); sessionStorage.setItem('ga_user', JSON.stringify(u)); }} />;
+    }
+
+    return (
+      <div className={`app-layout ${navOpen ? 'nav-open' : ''}`}>
+        {/* 移动端抽屉遮罩 */}
+        <div className="nav-backdrop" onClick={() => setNavOpen(false)} />
+        {/* 移动端汉堡按钮（仅窄屏显示） */}
+        <button className="hamburger" onClick={() => setNavOpen(o => !o)} aria-label="切换菜单">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+            {navOpen
+              ? <><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>
+              : <><line x1="3" y1="6"  x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></>
+            }
+          </svg>
+        </button>
+        <aside className="app-rail" style={{ background: railGrad }}>
+          <div className="rail-brand" title="青苹果 · GreenApple HR">
+            <img src="./assets/logo.svg" alt="青苹果" />
+            <span className="rail-brand-name">青苹果<em> HR</em></span>
+          </div>
+          <nav className="rail-nav">
+            <a href="#list" className={`rail-link ${route==='list'?'on':''}`} data-tip="候选人列表">
+              <span className="rail-ico rail-ico-text">HR</span>
+              <span style={{ flex: 1 }}>候选人列表</span>
+              <span className="rail-sub">LIST</span>
+            </a>
+            <a href="#trend" className={`rail-link ${route==='trend'?'on':''}`} data-tip="趋势分析">
+              <span className="rail-ico rail-ico-text">TR</span>
+              <span style={{ flex: 1 }}>趋势分析</span>
+              <span className="rail-sub">TREND</span>
+            </a>
+            <a href="#source" className={`rail-link ${route==='source'?'on':''}`} data-tip="来源分析">
+              <span className="rail-ico rail-ico-text">SR</span>
+              <span style={{ flex: 1 }}>来源分析</span>
+              <span className="rail-sub">SRC</span>
+            </a>
+            <a href="#hr" className={`rail-link ${route==='hr'?'on':''}`} data-tip="HR 表现">
+              <span className="rail-ico rail-ico-text">HP</span>
+              <span style={{ flex: 1 }}>HR 表现</span>
+              <span className="rail-sub">HRP</span>
+            </a>
+          </nav>
+          <div className="rail-bottom">
+            <button className="rail-link" data-tip="智能助手 / 帮助中心" onClick={() => setHelpOpen(true)} style={{ cursor:'pointer' }}>
+              <span className="rail-ico rail-ico-text">?</span>
+              <span style={{ flex: 1, textAlign: 'left' }}>智能助手</span>
+              <span className="rail-sub">HELP</span>
+            </button>
+            <button className="rail-link rail-avatar" data-tip="注销 / 切换账号"
+              onClick={() => { sessionStorage.removeItem('ga_user'); setUser(null); window.location.hash = '#list'; }}
+              style={{ cursor:'pointer' }}>
+              <span className="rail-ico rail-ico-text" style={{ color: deptObj?.color || '#475569' }}>
+                {user.name?.slice(0,1).toUpperCase() || 'U'}
+              </span>
+              <span style={{ flex: 1, textAlign: 'left' }}>{user.name}</span>
+              <span className="rail-sub">OUT</span>
+            </button>
+          </div>
+        </aside>
+
+        <div
+          className="app-main-wrap"
+          style={{
+            transform: `scale(${zoom})`,
+            transformOrigin: 'top left',
+            width: zoom !== 1 ? `${100 / zoom}%` : undefined,
+            minHeight: zoom !== 1 ? `${100 / zoom}vh` : undefined,
+          }}
+        >
+          <header className="app-topbar" style={{ borderTop: `3px solid ${deptObj?.color || '#0FA968'}` }}>
+            <div className="topbar-left">
+              <div className="topbar-title">
+                {route==='list' && '候选人列表'}
+                {route==='trend' && '趋势分析'}
+                {route==='source' && '招聘来源分析'}
+                {route==='hr' && 'HR 表现分析'}
+              </div>
+              <div className="topbar-sub">
+                {deptObj ? (
+                  <span><b style={{ color: deptObj.color }}>{deptObj.icon} {deptObj.name}</b> · 数据已按部门隔离</span>
+                ) : (
+                  <span>系统管理员 · 可查看所有部门数据</span>
+                )}
+              </div>
+            </div>
+            <div className="topbar-right">
+              <span className="topbar-user">
+                <span className="topbar-user-dot" style={{ background: deptObj?.color || '#3B82F6' }} />
+                {user.name}
+              </span>
+              <span><span className="live-dot" />实时监控中</span>
+              <span>今天：{new Date().toLocaleDateString('zh-CN')}</span>
+              {/* 整页缩放工具栏 */}
+              <div className="zoom-bar" role="group" aria-label="界面缩放">
+                <button
+                  className="zoom-btn"
+                  onClick={zoomOut}
+                  disabled={zoom === ZOOM_STEPS[0]}
+                  title="缩小 (Ctrl/Cmd + -)"
+                  aria-label="缩小"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                </button>
+                <button
+                  className="zoom-label"
+                  onClick={zoomReset}
+                  title="点击恢复 100% (Ctrl/Cmd + 0)"
+                  aria-label="重置缩放"
+                >
+                  {Math.round(zoom * 100)}%
+                </button>
+                <button
+                  className="zoom-btn"
+                  onClick={zoomIn}
+                  disabled={zoom === ZOOM_STEPS[ZOOM_STEPS.length - 1]}
+                  title="放大 (Ctrl/Cmd + +)"
+                  aria-label="放大"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="5" y1="12" x2="19" y2="12"/><line x1="12" y1="5" x2="12" y2="19"/></svg>
+                </button>
+              </div>
+            </div>
+          </header>
+
+
+          <main className="app-content">
+            {route === 'list' && (
+              <Fragment>
+                <StatCards data={summary} />
+                <Toolbar
+                  keyword={keyword} setKeyword={setKeyword}
+                  statusFilter={statusFilter} setStatusFilter={setStatusFilter}
+                  sourceFilter={sourceFilter} setSourceFilter={setSourceFilter}
+                  sourceOptions={sourceOptions}
+                  hrFilter={hrFilter} setHrFilter={setHrFilter}
+                  hrOptions={hrOptions}
+                  onImport={handleImport}
+                  onBatchSend={handleBatchSend}
+                  onOneClickAll={handleOneClickAll}
+                  onOneClickFiltered={handleOneClickFiltered}
+                  filteredCount={sendableFiltered.length}
+                  selectableCount={sendableAll.length}
+                  selectedCount={selected.length}
+                  onSelectAll={() => handleSelectAllOnPage()}
+                  onSelectNone={handleSelectNone}
+                  onSelectInvert={handleSelectInvert}
+                />
+                <div className="table-card">
+                  <div className="table-header">
+                    <div className="table-title">
+                      <span className="bar" />候选人列表
+                      <span style={{ fontSize:12, color:'#6B7A99', fontWeight:400, marginLeft:8 }}>
+                        共 {filtered.length} 条 · 第 {page} / {Math.max(1, Math.ceil(filtered.length/PAGE_SIZE))} 页
+                      </span>
+                    </div>
+                    <div style={{ fontSize:12, color:'#6B7A99' }}>
+                      <span style={{ color:'#0FA968' }}>●</span> 实时刷新中
+                    </div>
+                  </div>
+                  <CandidateTable
+                    data={pagedData}
+                    selectedRowKeys={selected}
+                    onSelectChange={setSelected}
+                    onSend={handleSend}
+                    onView={c => setDetail({ visible:true, candidate:c })}
+                  />
+                  <Pagination
+                    page={page}
+                    total={filtered.length}
+                    pageSize={PAGE_SIZE}
+                    onChange={setPage}
+                  />
+                </div>
+              </Fragment>
+            )}
+
+            {route === 'trend' && <PageTrend daily={daily} candidates={candidates} />}
+            {route === 'source' && <PageSource sourceStats={sourceStats} candidates={candidates} />}
+            {route === 'hr' && <PageHR hrStats={hrStats} totalCount={candidates.length} candidates={candidates} />}
+          </main>
+        </div>
+
+        <CandidateDetail
+          visible={detail.visible}
+          candidate={detail.candidate}
+          onClose={() => setDetail({ visible:false, candidate:null })}
+          onResend={c => { setDetail({ visible:false, candidate:null }); handleSend(c); }}
+        />
+        <SendDialog
+          visible={sendOpen}
+          candidates={sendTarget}
+          onClose={() => setSendOpen(false)}
+          onConfirm={handleConfirmSend}
+        />
+        <HelpBot open={helpOpen} onClose={() => setHelpOpen(false)} />
+      </div>
+    );
+  }
+
+  const root = ReactDOM.createRoot(document.getElementById('root'));
+  root.render(<App />);
+  </script>
+</body>
+</html>
+
+
+
+
