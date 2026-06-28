@@ -1,4 +1,4 @@
-﻿/* =====================================================
+/* =====================================================
      招聘候选人回复监控平台
      单文件 React 应用，蓝白主题，无任何构建步骤
      ===================================================== */
@@ -1391,7 +1391,7 @@ import * as XLSX from 'xlsx';
     );
   }
   // 来源页
-  function PageSource({ sourceStats }) {
+  function PageSource({ sourceStats, candidates }) {
     return (
       <div className="page-wrap">
         <div className="page-header">
@@ -2429,7 +2429,7 @@ import * as XLSX from 'xlsx';
             )}
 
             {route === 'trend' && <PageTrend daily={daily} candidates={candidates} />}
-            {route === 'source' && <PageSource sourceStats={sourceStats} />}
+            {route === 'source' && <PageSource sourceStats={sourceStats} candidates={candidates} />}
             {route === 'position' && <PagePosition positionStats={positionStats} candidates={candidates} />}
             {route === 'hr' && <PageHR hrStats={hrStats} totalCount={candidates.length} candidates={candidates} />}
           </main>
