@@ -1,30 +1,16 @@
-# 青苹果 · 招聘候选人回复监控平台
+# React + Vite
 
-一个单文件 React 静态网站，用于 HR 招聘候选人回复监控。
+This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
 
-## 文件说明
+Currently, two official plugins are available:
 
-| 文件 | 说明 |
-|------|------|
-| `index.html` | 主页面（自包含，含内联 React + Babel） |
-| `styles.css` | 全局样式（青苹果主题） |
-| `favicon.svg` | 网站图标 |
-| `assets/` | 静态资源（Logo 等） |
+- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
+- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
 
-## 部署方式
+## React Compiler
 
-### Netlify（推荐）
-直接拖拽整个文件夹到 [Netlify Drop](https://app.netlify.com/drop) 即可部署。
+The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
 
-### Vercel
-导入此仓库到 Vercel，框架选择"其他/静态网站"。
+## Expanding the Oxlint configuration
 
-### 本地运行
-直接用浏览器打开 `index.html` 即可。
-
-## 技术栈
-- React 18（CDN）
-- Babel Standalone（浏览器内编译 JSX）
-- Chart.js（图表）
-- SheetJS/xlsx（Excel 解析）
-- 零构建、零安装依赖
+If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and Oxlint's TypeScript related rules in your project.
